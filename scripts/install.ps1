@@ -61,4 +61,4 @@ if (-not $NoAutostart) {
 }
 Write-Host "Installed: $installedExe"
 Write-Host "Local module settings: $configPath"
-Write-Host 'Then restart ActivityWatch. Modules -> aw-watcher-teams controls the importer.'
+Write-Host 'Then restart ActivityWatch. Modules -> aw-watcher-teams controls the module.'

@@ -1,77 +1,109 @@
-# MS Teams ActivityWatch module — initial implementation
+# MS Teams ActivityWatch module (0.2)
 
-AW-managed local Windows collector and reusable Rust evidence core. This is an initial
-UI evidence detector, not validated attendance tracking. No Graph, Teams cloud API,
-audio/video recording, injection, message contents, credentials or participant data.
+Local AW-managed Windows worker with a reusable Rust session tracker. No Graph,
+Teams cloud API, audio/video recording, injection, message bodies, credentials or roster.
 
-## Behavior
-Enumerates all top-level windows owned by ms-teams.exe, including background windows.
-Reads button accessibility names transiently and emits only allowlisted boolean evidence.
-A leave/hang-up button plus microphone and camera controls, with no join button,
-produces joined_candidate. Camera/microphone controls can exist while disabled.
-Prejoin, multiple qualifying windows and failures remain separate states.
-No control set is unknown, never proof that a call ended.
-All candidates remain ui_inferred_unvalidated until actual Teams testing.
+## Capture and titles
+Enumerates every top-level window owned by each ms-teams process, irrespective of
+foreground, visibility or minimized state. It does not select only MainWindowHandle.
+Button accessibility names are used transiently for a narrow allowlist:
+leave/hang up plus microphone, camera or sharing controls, with no join control.
+Window captions are read ONLY for qualifying call windows when collect_meeting_title
+is enabled. The collector falls back to that qualified window's UIA root name when
+its Win32 caption is empty/generic. No arbitrary text nodes/chat headings are searched.
+Root name/caption may still be generic or absent; then context remains unavailable.
 
-data.title is always present, with Call, Presenting, Prejoin, Multiple call windows
-or Call state unknown. The bucket display name is MS Teams, so titles omit Teams.
-Meeting/call classification and meeting title extraction are not implemented yet.
-Neither titles nor roster/message surfaces are read. English/Czech button rules are
-provisional: unsupported language/version yields unknown, not compatibility claims.
-A single window may contain stale/hidden controls; the rule needs real-host validation.
+data.title contains the cleaned meeting/call caption with the Teams suffix removed.
+No app/watcher prefix is added. meeting_title/title_source carry structured provenance.
+Fallbacks are Call (title unavailable) and Meeting (title unavailable).
+call_kind is meeting only when a recognized meeting-info control is exposed; otherwise
+unknown. A topic alone does not prove meeting vs 1:1/group call.
+Title collection defaults off for new installations, and must be enabled explicitly.
+The user requested title capture for the installed local module; it is enabled there.
+Privacy-disabled collection avoids reading captions and redacts undelivered titles.
 
-Adjacent identical joined candidates produce bounded inferred intervals. Transitions,
-large wall-clock gaps (sleep), failure or failed delivery break continuity.
-These are inferred call intervals, not attention/work time. No AFK override is applied.
-Foreground/AFK, lock events, stable session identities, reconnect reconciliation,
-capability registry/WASAPI collectors and cross-app JSONL export are future work.
-Unknown samples are zero-duration observations. Duration is not backfilled after outages.
+English/Czech control rules remain provisional; locales and Teams versions vary.
+A title may contain personal/topic metadata. It stays in the local AW bucket and
+local delivery checkpoint, never console/error logs. No private fixture is committed.
 
-## Host integration
-The executable is an AW-managed worker, not an independent tray/service product.
-AW owns its lifecycle through Modules and configuration through its standard local
-component directory; bucket data is stored by AW. No independent scheduled task.
-Initial settings are JSON (server, interval_seconds, collector_timeout_seconds).
-No dedicated settings/review GUI yet. Custom call-evidence buckets require query/UI
-integration: data.title and name do not make them ordinary window-watcher events.
+## One interval per observed call
+Two matching observations create the first positive-duration event, using the first
+observation as its UTC start. Nothing is written for the initial instantaneous sample,
+prejoin, unknown or ambiguous state. No fabricated positive duration is assigned.
+Further observations update that SAME AW event ID; they do not append heartbeat
+fragments. Sharing/mute/camera/title changes do not split the event.
+The event duration grows through continuous evidence and stops at the last positive
+observation. The end boundary has polling uncertainty; an unobserved tail is not added.
 
-Build: cargo test --locked; cargo clippy --all-targets -- -D warnings;
-cargo build --release --locked.
-Initialize configuration: aw-watcher-teams.exe --init-config.
-The worker expects that initialization before AW starts it.
+The locally generated session_id is not a Teams meeting ID. Process start time plus
+HWND is volatile correlation only. Same-title meetings on different windows are not
+automatically joined. Multiple qualifying windows remain ambiguous; a duplicated
+meeting toolbar may require future validated reconciliation.
+Failure, loss of qualifying controls, different window/process or a large clock gap
+starts a fresh observed interval. Thus an actual call can still have separated
+evidence intervals when observation fails. It never claims those gaps were attended.
+Collector sleep uses bounded wall-clock spacing. Explicit Windows suspend/lock events
+and attention/AFK integration remain future work; call duration is separate from work time.
 
-Use scripts/install.ps1 -ActivityWatchDirectory <AW-directory> after building. It copies the worker, initializes config and preserves/backups the tray autostart list. The installed worker is under ActivityWatch/aw-watcher-teams/aw-watcher-teams.exe.
-The installer adds aw-watcher-teams to
-[aw-qt].autostart_modules in aw-qt.toml, preserving other modules. Validate discovery
-against the installed AW release before deployment. No installation has been performed.
-Config: %LOCALAPPDATA%/activitywatch/aw-watcher-teams/config.json.
-Only HTTP loopback is accepted, redirects disabled; defaults to 127.0.0.1:5600.
-Testing should use a separate AW test server at 5666.
-AW_PROFILE is not implemented in this initial version; do not deploy into custom
-profiles until corresponding directory handling is added.
-Collection subprocesses are bounded by timeout; errors log no private UI content.
-Single-instance lock prevents duplicate collection. HTTP delivery is bounded and
-failed samples are dropped; there is no durable retry queue in this version.
-Worker has no auto-restart policy of its own; AW controls stop/start.
+## Delivery
+POST /events inserts a positive session event; subsequent POSTs use its returned ID
+to replace only that event. A local atomic session-delivery.json checkpoint persists
+queued updates and IDs. A lost insertion reply is recovered by querying this bucket
+for the local session_id before re-insertion. Completed failed sessions remain queued;
+backlog is capped at 1000. The latest acknowledged session is retained for updates.
+Restarts preserve delivery but start new detection identity; they do not infer that a
+call survived the worker's downtime. No old history is deleted or reconstructed.
 
-## Validation
-Automated tests cover incomplete controls, prejoin, muted/camera-off control evidence,
-ambiguous windows, unknown/failure, readable titles, bounded gaps, transitions and
-loopback URL restrictions. Synthetic subprocess tests cover valid collector output and termination on timeout. PowerShell syntax is checked without executing real collection.
-No private/live meeting data has been inspected. Synthetic tests do not verify
-Teams accessibility, minimized controls, policy restrictions or actual AW integration.
+The custom call-evidence bucket ID is aw-watcher-teams_<hostname>. The installed
+Python AW server ignores a creation name field and its public update route does not
+support renaming this bucket; do not claim its label is MS Teams in the GUI.
+data.title is supported metadata but does not enable ordinary window-watcher charts.
+Dedicated query/timeline/review UI integration remains pending.
 
-Before enabling: test synthetic 1:1/group/scheduled calls, ringing/prejoin/lobby,
-background/minimized/pop-outs, silent listening, sharing, device switching,
-multiple accounts, reconnects, lock/suspend, Teams restarts and version/localization.
-Compare independently noted join/leave times with evidence, report unknown duration,
-false positives and boundary error. Explicitly test AW bucket creation/name, duration,
-outage recovery and Modules stop/start. Add loopback protocol tests before release.
+## Lifecycle and settings
+AW owns discovery, startup and storage; no independent tray app, service or task.
+Build:
+  cargo test --offline --locked
+  cargo clippy --offline --all-targets -- -D warnings
+  cargo build --offline --release --locked
+Install:
+  scripts/install.ps1 -ActivityWatchDirectory <existing AW directory>
+Installer initializes settings and preserves/backups the AW tray module list.
+Restart AW to discover/start the module; Modules -> aw-watcher-teams controls it.
+Only HTTP loopback is accepted and redirects are disabled. Default AW server is
+127.0.0.1:5600; use a separate 5666 test server where available.
+Config: %LOCALAPPDATA%/activitywatch/aw-watcher-teams/config.json
+Fields: server, interval_seconds (2..60), collector_timeout_seconds (1..15),
+collect_meeting_title (bool, default false). Existing config files remain compatible.
+The collector runs in a hidden bounded subprocess. Single-instance lock prevents
+duplicate workers. Custom AW_PROFILE directories are explicitly unsupported.
+No dedicated settings UI exists yet; JSON settings and AW Modules are the current host interface.
 
-## Sources and licensing
-Original code; MIT. No prior-art code copied.
-- https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-enumwindows
-- https://learn.microsoft.com/en-ie/windows/win32/winauto/uiauto-eventsoverview
-- https://docs.activitywatch.net/en/latest/watchers.html
-- https://help.elgato.com/hc/en-us/articles/26249796361613-How-to-pair-Stream-Deck-plugin-with-Microsoft-Teams
-The discontinued device API is deliberately not used.
+## Validation on 2026-10-08
+20 automated tests passed: hour-long accumulation, positive-only records, privacy,
+prejoin/ambiguity, changing controls/titles, identity changes, failure, clock gaps,
+loopback restrictions, synthetic collector JSON/switch handling and timeout.
+An explicit live AW protocol test passed against the installed server in an isolated
+synthetic bucket: repeated updates produce ONE event at 3600 seconds; lost insertion
+acknowledgement/restart recovery keeps the same ID; privacy redaction also updates it.
+Test bucket is deleted by its ownership guard, without touching real history.
+Run that opt-in test:
+  $env:AW_PROTOCOL_SERVER='http://127.0.0.1:5600/'
+  cargo test --offline --locked installed_aw_updates_one_session_and_recovers_lost_ack -- --ignored
+PowerShell syntax, Clippy and release build passed.
+Live read-only collector execution enumerated 16 Teams windows with zero qualifying
+call windows. This verifies enumeration/execution, not real meeting title extraction.
+User-supplied legacy export had 291 call fragments (~3312 seconds) and 355 zero
+unknown observations. It is defect evidence, not a complete ground-truth test.
+
+Before claiming complete compatibility, test synthetic ongoing calls in background,
+minimized windows, sharing toolbar/pop-outs, listen-only mode, 1:1/group/scheduled
+calls, lobby/ringing/device tests, accounts, reconnects, restart/suspend and locales.
+Compare an independent join/leave timeline with captured title and duration.
+
+## Sources / license
+Original code, MIT. No prior-art code copied.
+https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-enumwindows
+https://learn.microsoft.com/en-ie/windows/win32/winauto/uiauto-eventsoverview
+https://docs.activitywatch.net/en/latest/watchers.html
+Discontinued device API deliberately excluded.
