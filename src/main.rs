@@ -1,4 +1,4 @@
-use aw_watcher_teams::{bounded_duration, classify, validate_server, Snapshot};
+use aw_watcher_teams::{aw::AwWriter, classify, validate_server, Snapshot, Tracker};
 use fs2::FileExt;
 use serde::Deserialize;
 use std::{
@@ -14,17 +14,24 @@ struct Config {
     server: String,
     interval_seconds: u64,
     collector_timeout_seconds: u64,
+    #[serde(default)]
+    collect_meeting_title: bool,
 }
-fn collect(script: &str, timeout: u64) -> Snapshot {
+fn collect(script: &str, timeout: u64, collect_title: bool) -> Snapshot {
     let result = (|| -> Result<Snapshot, Box<dyn std::error::Error>> {
         let mut command = Command::new("powershell.exe");
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
-            command.creation_flags(0x08000000); // CREATE_NO_WINDOW
+            command.creation_flags(0x08000000);
         }
+        let expression = if collect_title {
+            format!("& {{\n{script}\n}} -CollectMeetingTitle")
+        } else {
+            script.to_owned()
+        };
         let mut child = command
-            .args(["-NoProfile", "-NonInteractive", "-Command", script])
+            .args(["-NoProfile", "-NonInteractive", "-Command", &expression])
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()?;
@@ -40,7 +47,7 @@ fn collect(script: &str, timeout: u64) -> Snapshot {
             if start.elapsed() > Duration::from_secs(timeout) {
                 child.kill()?;
                 child.wait()?;
-                return Err("timeout".into());
+                return Err("collector timeout".into());
             }
             thread::sleep(Duration::from_millis(50));
         }
@@ -51,6 +58,10 @@ fn collect(script: &str, timeout: u64) -> Snapshot {
     })
 }
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let profile = std::env::var("AW_PROFILE").unwrap_or_default();
+    if !profile.is_empty() && profile != "default" {
+        return Err("Custom AW profiles unsupported".into());
+    }
     let base = PathBuf::from(std::env::var("LOCALAPPDATA")?)
         .join("activitywatch")
         .join("aw-watcher-teams");
@@ -60,7 +71,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if !config_path.exists() {
             fs::write(
                 &config_path,
-                r#"{"server":"http://127.0.0.1:5600/","interval_seconds":5,"collector_timeout_seconds":3}"#,
+                r#"{"server":"http://127.0.0.1:5600/","interval_seconds":5,"collector_timeout_seconds":8,"collect_meeting_title":false}"#,
             )?;
         }
         println!("{}", config_path.display());
@@ -68,9 +79,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let config: Config = serde_json::from_slice(&fs::read(&config_path)?)?;
     if !(2..=60).contains(&config.interval_seconds)
-        || !(1..=10).contains(&config.collector_timeout_seconds)
+        || !(1..=15).contains(&config.collector_timeout_seconds)
     {
-        return Err("invalid timing settings".into());
+        return Err("Invalid timing settings".into());
     }
     let server = validate_server(&config.server)?;
     let lock = fs::OpenOptions::new()
@@ -84,73 +95,72 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .redirects(0)
         .build();
     let host = std::env::var("COMPUTERNAME").unwrap_or_else(|_| "local".into());
-    let bucket = format!("aw-watcher-teams_{}", host);
+    let bucket = format!("aw-watcher-teams_{host}");
     let bucket_url = server.join(&format!("api/0/buckets/{bucket}"))?;
-    // Only this module's bucket. Repeated creation is allowed by AW.
     loop {
-        if agent
+        match agent
             .post(bucket_url.as_str())
             .send_json(serde_json::json!({
-            "client":"aw-watcher-teams","type":"call-evidence","hostname":host,"name":"MS Teams"
-            }))
-            .is_ok()
-        {
-            break;
+                "client":"aw-watcher-teams","type":"call-evidence","hostname":host
+            })) {
+            Ok(_) => break,
+            Err(ureq::Error::Status(304, _)) => break,
+            Err(_) => {
+                eprintln!("AW unavailable; retrying bucket creation");
+                thread::sleep(Duration::from_secs(5));
+            }
         }
-        eprintln!("AW unavailable; retrying bucket creation");
-        thread::sleep(Duration::from_secs(5));
     }
-    let mut previous = None;
-    let mut previous_at = chrono::Utc::now();
+    let mut writer = AwWriter::new(bucket_url.to_string(), base.join("session-delivery.json"))?;
+    if !config.collect_meeting_title {
+        writer.redact_pending_titles()?;
+    }
+    let namespace = format!(
+        "{}-{}",
+        chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default(),
+        std::process::id()
+    );
+    let mut tracker = Tracker::new(
+        namespace,
+        (config.interval_seconds + config.collector_timeout_seconds + 5) as f64,
+        config.collect_meeting_title,
+    );
+    let mut last_status = String::new();
     loop {
-        let observation = classify(&collect(
+        let snapshot = collect(
             include_str!("../scripts/snapshot.ps1"),
             config.collector_timeout_seconds,
-        ));
-        let now = chrono::Utc::now();
-        let elapsed = (now - previous_at).num_milliseconds() as f64 / 1000.0;
-        let duration = bounded_duration(
-            previous.as_ref(),
-            &observation,
-            elapsed,
-            (config.interval_seconds + config.collector_timeout_seconds + 4) as f64,
+            config.collect_meeting_title,
         );
-        let timestamp = if duration > 0.0 {
-            previous_at.to_rfc3339()
-        } else {
-            now.to_rfc3339()
-        };
-        // Zero pulse prevents heartbeat bridging across sleeps, hangs and failed deliveries.
-        let heartbeat = format!(
-            "{}/heartbeat?pulsetime=0",
-            bucket_url.as_str().trim_end_matches('/')
-        );
-        let result = agent.post(&heartbeat).send_json(serde_json::json!({
-        "timestamp":timestamp,"duration":duration,"data":observation
-        }));
-        if result.is_err() {
-            eprintln!("AW delivery failed; sample not counted");
-            previous = None;
-        } else {
-            previous = Some(observation);
+        let status = classify(&snapshot, config.collect_meeting_title).state;
+        if status != last_status {
+            eprintln!("Collector state: {status}");
+            last_status = status;
         }
-        previous_at = now;
+        if let Some(event) = tracker.observe(&snapshot, chrono::Utc::now()) {
+            writer.queue(event)?;
+        }
+        if writer.flush().is_err() {
+            eprintln!("AW delivery pending; retrying saved sessions");
+        }
         thread::sleep(Duration::from_secs(config.interval_seconds));
     }
 }
-
 #[cfg(all(test, windows))]
 mod collector_tests {
     use super::*;
     #[test]
     fn synthetic_collector_protocol() {
-        let s=collect("Write-Output '{\"collector_ok\":true,\"windows\":[{\"leave\":true,\"microphone\":true,\"camera\":true,\"join\":false,\"sharing\":false}]}'", 5);
-        assert_eq!(classify(&s).state, "joined_candidate");
+        let s=collect("Write-Output '{\"collector_ok\":true,\"windows\":[{\"key\":\"test-window\",\"leave\":true,\"microphone\":true,\"camera\":true}]}'",5,false);
+        assert_eq!(classify(&s, true).state, "joined_candidate");
+    }
+    #[test]
+    fn title_switch_protocol() {
+        let s=collect("param([switch]$CollectMeetingTitle) @{collector_ok=$true;windows=@(@{key='test';leave=$true;microphone=$true;title=$(if($CollectMeetingTitle){'Synthetic review'}else{$null})})}|ConvertTo-Json -Depth 4 -Compress",5,true);
+        assert_eq!(classify(&s, true).title, "Synthetic review");
     }
     #[test]
     fn collector_timeout_becomes_unknown() {
-        let s = collect("Start-Sleep -Seconds 20", 1);
-        assert!(!s.collector_ok);
-        assert_eq!(classify(&s).state, "unknown");
+        assert!(!collect("Start-Sleep -Seconds 20", 1, false).collector_ok);
     }
 }
