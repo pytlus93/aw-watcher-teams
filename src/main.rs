@@ -1,3 +1,4 @@
+use aw_watcher_teams::title::TitleFormat;
 use aw_watcher_teams::{aw::AwWriter, classify, validate_server, Snapshot, Tracker};
 use fs2::FileExt;
 use serde::Deserialize;
@@ -16,6 +17,8 @@ struct Config {
     collector_timeout_seconds: u64,
     #[serde(default)]
     collect_meeting_title: bool,
+    #[serde(default)]
+    title_format: TitleFormat,
 }
 fn collect(script: &str, timeout: u64, collect_title: bool) -> Snapshot {
     let result = (|| -> Result<Snapshot, Box<dyn std::error::Error>> {
@@ -71,7 +74,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if !config_path.exists() {
             fs::write(
                 &config_path,
-                r#"{"server":"http://127.0.0.1:5600/","interval_seconds":5,"collector_timeout_seconds":8,"collect_meeting_title":false}"#,
+                r#"{"server":"http://127.0.0.1:5600/","interval_seconds":5,"collector_timeout_seconds":8,"collect_meeting_title":false,"title_format":{"include_organization":true,"include_account":false,"organization_map":{},"separator":" | "}}"#,
             )?;
         }
         println!("{}", config_path.display());
@@ -83,6 +86,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         return Err("Invalid timing settings".into());
     }
+    config.title_format.validate()?;
     let server = validate_server(&config.server)?;
     let lock = fs::OpenOptions::new()
         .create(true)
@@ -112,9 +116,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     let mut writer = AwWriter::new(bucket_url.to_string(), base.join("session-delivery.json"))?;
-    if !config.collect_meeting_title {
-        writer.redact_pending_titles()?;
-    }
+    writer.reformat_pending_titles(config.collect_meeting_title, &config.title_format)?;
     let namespace = format!(
         "{}-{}",
         chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default(),
@@ -124,7 +126,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         namespace,
         (config.interval_seconds + config.collector_timeout_seconds + 5) as f64,
         config.collect_meeting_title,
-    );
+    )
+    .with_title_format(config.title_format.clone());
     let mut last_status = String::new();
     loop {
         let snapshot = collect(

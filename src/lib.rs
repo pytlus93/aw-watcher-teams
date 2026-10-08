@@ -1,5 +1,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+pub mod title;
+use title::{Context, TitleFormat};
 
 #[derive(Debug, Default, Deserialize)]
 pub struct Snapshot {
@@ -25,6 +27,10 @@ pub struct Activity {
     pub app: String,
     pub title: String,
     pub meeting_title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub organization: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
     pub call_kind: String,
     pub state: String,
     pub assessment: String,
@@ -60,11 +66,7 @@ pub fn readable_title(raw: Option<&str>) -> Option<String> {
     {
         return None;
     }
-    let title: String = title
-        .chars()
-        .filter(|c| !c.is_control())
-        .take(240)
-        .collect();
+    let title: String = title.chars().filter(|c| !c.is_control()).collect();
     if title.trim().is_empty() {
         None
     } else {
@@ -79,12 +81,21 @@ pub fn candidates(snapshot: &Snapshot) -> Vec<&Window> {
         .collect()
 }
 pub fn classify(snapshot: &Snapshot, collect_title: bool) -> Activity {
+    classify_with_format(snapshot, collect_title, &TitleFormat::default())
+}
+pub fn classify_with_format(
+    snapshot: &Snapshot,
+    collect_title: bool,
+    format: &TitleFormat,
+) -> Activity {
     let calls = candidates(snapshot);
     let mut result = Activity {
-        schema_version: 2,
+        schema_version: 3,
         app: "MS Teams".into(),
         title: "Call state unknown".into(),
         meeting_title: None,
+        organization: None,
+        account: None,
         call_kind: "unknown".into(),
         state: "unknown".into(),
         assessment: "ui_inferred".into(),
@@ -107,9 +118,11 @@ pub fn classify(snapshot: &Snapshot, collect_title: bool) -> Activity {
         }
         .into();
         if collect_title {
-            result.meeting_title = readable_title(w.title.as_deref());
-            if let Some(title) = &result.meeting_title {
-                result.title = title.clone();
+            if let Some(context) = format.parse(w.title.as_deref()) {
+                result.title = format.display(&context);
+                result.meeting_title = Some(context.topic);
+                result.organization = context.organization;
+                result.account = context.account;
                 result.title_source = Some("qualified_window_title".into());
             }
         }
@@ -147,6 +160,7 @@ pub struct Tracker {
     next: u64,
     max_gap_seconds: f64,
     collect_title: bool,
+    title_format: TitleFormat,
 }
 impl Tracker {
     pub fn new(namespace: String, max_gap_seconds: f64, collect_title: bool) -> Self {
@@ -156,10 +170,15 @@ impl Tracker {
             next: 0,
             max_gap_seconds,
             collect_title,
+            title_format: TitleFormat::default(),
         }
     }
+    pub fn with_title_format(mut self, format: TitleFormat) -> Self {
+        self.title_format = format;
+        self
+    }
     pub fn observe(&mut self, snapshot: &Snapshot, now: DateTime<Utc>) -> Option<SessionEvent> {
-        let activity = classify(snapshot, self.collect_title);
+        let activity = classify_with_format(snapshot, self.collect_title, &self.title_format);
         let calls = candidates(snapshot);
         if activity.state != "joined_candidate" || calls[0].key.is_empty() {
             self.active = None;
@@ -177,9 +196,9 @@ impl Tracker {
                 if self.collect_title && current.meeting_title.is_none() {
                     current.meeting_title = active.event.data.activity.meeting_title.clone();
                     current.title_source = active.event.data.activity.title_source.clone();
-                    if let Some(title) = &current.meeting_title {
-                        current.title = title.clone();
-                    }
+                    current.organization = active.event.data.activity.organization.clone();
+                    current.account = active.event.data.activity.account.clone();
+                    current.title = active.event.data.activity.title.clone();
                 }
                 if current.call_kind == "unknown"
                     && active.event.data.activity.call_kind == "meeting"
@@ -418,3 +437,155 @@ mod tests {
 }
 
 pub mod aw;
+
+/// Apply display/privacy policy to a queued prior-version event without changing duration or identity.
+pub fn reformat_activity(activity: &mut Activity, collect_title: bool, format: &TitleFormat) {
+    let context = if !collect_title {
+        None
+    } else if activity.schema_version <= 2 {
+        format.parse(activity.meeting_title.as_deref())
+    } else {
+        activity.meeting_title.as_ref().map(|topic| {
+            format.apply(Context {
+                topic: topic.clone(),
+                organization: activity.organization.clone(),
+                account: activity.account.clone(),
+            })
+        })
+    };
+    if let Some(context) = context {
+        activity.title = format.display(&context);
+        activity.meeting_title = Some(context.topic);
+        activity.organization = context.organization;
+        activity.account = context.account;
+    } else {
+        activity.meeting_title = None;
+        activity.organization = None;
+        activity.account = None;
+        activity.title_source = None;
+        activity.title = if activity.call_kind == "meeting" {
+            "Meeting (title unavailable)"
+        } else {
+            "Call (title unavailable)"
+        }
+        .into();
+    }
+    activity.schema_version = 3;
+}
+
+#[cfg(test)]
+mod formatting_tests {
+    use super::*;
+    use std::collections::BTreeMap;
+    fn policy() -> TitleFormat {
+        TitleFormat {
+            organization_map: BTreeMap::from([("Example Company Ltd.".into(), "Example".into())]),
+            ..Default::default()
+        }
+    }
+    #[test]
+    fn legacy_event_reformats_without_changing_duration_or_identity() {
+        let mut activity = classify(
+            &Snapshot {
+                collector_ok: true,
+                windows: vec![Window {
+                    leave: true,
+                    microphone: true,
+                    ..Default::default()
+                }],
+            },
+            true,
+        );
+        activity.schema_version = 2;
+        activity.meeting_title = Some("Echo | Example Company Ltd. | self@example.invalid".into());
+        activity.title = activity.meeting_title.clone().unwrap();
+        let mut event = SessionEvent {
+            timestamp: DateTime::from_timestamp(1_700_000_000, 0).unwrap(),
+            duration: 35.576,
+            data: SessionData {
+                activity,
+                session_id: "synthetic-stable".into(),
+                identity_source: "local_observed_session".into(),
+            },
+        };
+        reformat_activity(&mut event.data.activity, true, &policy());
+        assert_eq!(event.duration, 35.576);
+        assert_eq!(event.data.session_id, "synthetic-stable");
+        assert_eq!(event.data.activity.title, "Echo | Example");
+        assert_eq!(event.data.activity.meeting_title.as_deref(), Some("Echo"));
+        assert_eq!(event.data.activity.account, None);
+        assert_eq!(
+            event.data.activity.organization.as_deref(),
+            Some("Example Company Ltd.")
+        );
+        let before = event.data.activity.clone();
+        reformat_activity(&mut event.data.activity, true, &policy());
+        assert_eq!(event.data.activity, before);
+        let only_topic = TitleFormat {
+            include_organization: false,
+            ..policy()
+        };
+        reformat_activity(&mut event.data.activity, true, &only_topic);
+        assert_eq!(event.data.activity.title, "Echo");
+        assert_eq!(event.data.activity.organization, None);
+    }
+    #[test]
+    fn privacy_off_removes_all_caption_metadata() {
+        let s = Snapshot {
+            collector_ok: true,
+            windows: vec![Window {
+                leave: true,
+                microphone: true,
+                title: Some("Echo | Example Company Ltd. | self@example.invalid".into()),
+                ..Default::default()
+            }],
+        };
+        let mut a = classify_with_format(
+            &s,
+            true,
+            &TitleFormat {
+                include_account: true,
+                ..policy()
+            },
+        );
+        assert!(a.account.is_some());
+        reformat_activity(&mut a, false, &policy());
+        assert_eq!(a.meeting_title, None);
+        assert_eq!(a.account, None);
+        assert_eq!(a.organization, None);
+        assert_eq!(a.title, "Call (title unavailable)");
+    }
+    #[test]
+    fn mappings_do_not_chain_on_replay() {
+        let p = TitleFormat {
+            organization_map: BTreeMap::from([
+                ("Example Company Ltd.".into(), "Example".into()),
+                ("Example".into(), "Another".into()),
+            ]),
+            ..Default::default()
+        };
+        let s = Snapshot {
+            collector_ok: true,
+            windows: vec![Window {
+                leave: true,
+                microphone: true,
+                title: Some("Echo | Example Company Ltd. | self@example.invalid".into()),
+                ..Default::default()
+            }],
+        };
+        let mut a = classify_with_format(&s, true, &p);
+        assert_eq!(a.title, "Echo | Example");
+        reformat_activity(&mut a, true, &p);
+        assert_eq!(a.title, "Echo | Example");
+    }
+    #[test]
+    fn long_topic_does_not_truncate_account_before_parsing() {
+        let caption = format!(
+            "{} | Example Company Ltd. | self@example.invalid | Microsoft Teams",
+            "A".repeat(300)
+        );
+        let c = policy().parse(Some(&caption)).unwrap();
+        assert_eq!(c.topic.chars().count(), 240);
+        assert_eq!(c.account, None);
+    }
+}

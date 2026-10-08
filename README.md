@@ -1,4 +1,4 @@
-# MS Teams ActivityWatch module (0.2)
+# MS Teams ActivityWatch module (0.3)
 
 Local AW-managed Windows worker with a reusable Rust session tracker. No Graph,
 Teams cloud API, audio/video recording, injection, message bodies, credentials or roster.
@@ -13,8 +13,8 @@ is enabled. The collector falls back to that qualified window's UIA root name wh
 its Win32 caption is empty/generic. No arbitrary text nodes/chat headings are searched.
 Root name/caption may still be generic or absent; then context remains unavailable.
 
-data.title contains the cleaned meeting/call caption with the Teams suffix removed.
-No app/watcher prefix is added. meeting_title/title_source carry structured provenance.
+data.title contains the topic and configured context labels with the Teams suffix removed.
+No app/watcher prefix is added. meeting_title carries the topic; title_source carries provenance. See title_format below.
 Fallbacks are Call (title unavailable) and Meeting (title unavailable).
 call_kind is meeting only when a recognized meeting-info control is exposed; otherwise
 unknown. A topic alone does not prove meeting vs 1:1/group call.
@@ -74,7 +74,7 @@ Only HTTP loopback is accepted and redirects are disabled. Default AW server is
 127.0.0.1:5600; use a separate 5666 test server where available.
 Config: %LOCALAPPDATA%/activitywatch/aw-watcher-teams/config.json
 Fields: server, interval_seconds (2..60), collector_timeout_seconds (1..15),
-collect_meeting_title (bool, default false). Existing config files remain compatible.
+collect_meeting_title (bool, default false), title_format (optional object). Existing config files remain compatible.
 The collector runs in a hidden bounded subprocess. Single-instance lock prevents
 duplicate workers. Custom AW_PROFILE directories are explicitly unsupported.
 No dedicated settings UI exists yet; JSON settings and AW Modules are the current host interface.
@@ -107,3 +107,55 @@ https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-enumwindo
 https://learn.microsoft.com/en-ie/windows/win32/winauto/uiauto-eventsoverview
 https://docs.activitywatch.net/en/latest/watchers.html
 Discontinued device API deliberately excluded.
+
+## Configurable title formatting (0.3)
+
+Add title_format to config.json (other existing settings stay as they are):
+
+```json
+"title_format": {
+  "include_organization": true,
+  "include_account": false,
+  "organization_map": {
+    "Example Company Ltd.": "Example",
+    "Example Subsidiary": "Subsidiary"
+  },
+  "separator": " | "
+}
+```
+
+For a validated caption like
+Echo | Example Company Ltd. | self@example.invalid | Microsoft Teams
+the displayed title becomes Echo | Example.
+Set include_organization to false for Echo alone. Set include_account to true only
+if you deliberately want the account suffix. separator may be changed to " — ".
+Mapping keys match full organization names without case sensitivity. Unmapped
+organizations retain their name. An empty mapped value omits that organization.
+Mappings are literal names, not regular expressions.
+
+The topic is preserved (including pipes inside the topic). The trailing email is
+classified as the current account only in a caption with a preceding topic. An
+organization without an email suffix is recognized only when it explicitly matches
+a mapping key; unknown pipe-separated topic text is not guessed to be an organization.
+These rules are based on the observed desktop caption format; new Teams formats
+may need another parser profile.
+
+data.meeting_title now stores only the topic; data.organization retains the permitted
+canonical organization so replay does not chain aliases. The shortened label is used
+in data.title. Disabled account/organization fields are omitted from emitted metadata
+as well as titles. Account collection is off by default; email in an actual meeting
+topic is not indiscriminately removed. collect_meeting_title=false still disables all
+caption metadata. The collector reads the permitted whole caption transiently to parse
+its parts, then discards the unused fields; no raw caption field is persisted.
+These events use schema_version 3.
+
+After editing settings, stop/start this module through AW's Modules menu (or restart AW).
+Formatting of the latest session retained in the delivery checkpoint is reapplied in
+place on startup, preserving its AW event ID, session ID and duration. Earlier history
+is not bulk rewritten. Turning a field back on cannot recover previously discarded
+historical metadata; later observations can supply it again.
+
+0.3 validation: 37 automated tests passed, plus the explicit installed-AW synthetic
+protocol test. New checks cover mappings, privacy options, custom separators, long
+topics, topic pipes, legacy caption migration and replay without repeated aliasing.
+The real AW test confirms formatting changes leave one event and its duration intact.

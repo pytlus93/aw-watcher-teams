@@ -68,22 +68,22 @@ impl AwWriter {
         }
         self.save()
     }
-    pub fn redact_pending_titles(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn reformat_pending_titles(
+        &mut self,
+        collect_title: bool,
+        format: &crate::title::TitleFormat,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         for item in &mut self.pending {
-            if item.event.data.activity.meeting_title.is_some() {
-                let activity = &mut item.event.data.activity;
-                activity.meeting_title = None;
-                activity.title_source = None;
-                activity.title = if activity.call_kind == "meeting" {
-                    "Meeting (title unavailable)"
-                } else {
-                    "Call (title unavailable)"
-                }
-                .into();
+            let before = item.event.data.activity.clone();
+            crate::reformat_activity(&mut item.event.data.activity, collect_title, format);
+            if item.event.data.activity != before {
                 item.dirty = true;
             }
         }
         self.save()
+    }
+    pub fn redact_pending_titles(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        self.reformat_pending_titles(false, &crate::title::TitleFormat::default())
     }
     fn recover_id(&self, item: &Pending) -> Result<Option<u64>, Box<dyn std::error::Error>> {
         let mut url = url::Url::parse(&format!("{}/events", self.bucket_url))?;
@@ -250,6 +250,35 @@ mod protocol_tests {
         assert_eq!(records.len(), 1);
         assert!(records[0]["data"]["meeting_title"].is_null());
         assert_eq!(records[0]["data"]["title"], "Call (title unavailable)");
+        // Migrate the old caption shape and update only this event's title/metadata.
+        event.data.activity.schema_version = 2;
+        event.data.activity.meeting_title =
+            Some("Echo | Example Company Ltd. | self@example.invalid".into());
+        event.data.activity.title = event.data.activity.meeting_title.clone().unwrap();
+        writer.queue(event).unwrap();
+        writer.flush().unwrap();
+        let format = crate::title::TitleFormat {
+            organization_map: std::collections::BTreeMap::from([(
+                "Example Company Ltd.".into(),
+                "Example".into(),
+            )]),
+            ..Default::default()
+        };
+        writer.reformat_pending_titles(true, &format).unwrap();
+        writer.flush().unwrap();
+        let records: Vec<Value> = guard
+            .agent
+            .get(&format!("{url}/events"))
+            .call()
+            .unwrap()
+            .into_json()
+            .unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0]["id"].as_u64(), Some(id));
+        assert_eq!(records[0]["duration"].as_f64(), Some(3600.0));
+        assert_eq!(records[0]["data"]["title"], "Echo | Example");
+        assert_eq!(records[0]["data"]["meeting_title"], "Echo");
+        assert!(records[0]["data"].get("account").is_none());
         drop(guard);
     }
 }
