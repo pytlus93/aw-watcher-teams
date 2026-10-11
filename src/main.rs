@@ -1,9 +1,11 @@
-use aw_watcher_teams::config::Config;
 use aw_watcher_teams::{aw::AwWriter, classify, validate_server, Snapshot, Tracker};
+use aw_watcher_teams::{
+    context::{Command as LaunchCommand, Launch},
+    privacy_log::{self, Code},
+};
 use std::{
     fs,
     io::Read,
-    path::PathBuf,
     process::{Command, Stdio},
     thread,
     time::{Duration, Instant},
@@ -21,13 +23,17 @@ fn collect(script: &str, timeout: u64, collect_title: bool) -> Snapshot {
         } else {
             script.to_owned()
         };
-        let mut child = command
+        command
             .args(["-NoProfile", "-NonInteractive", "-Command", &expression])
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()?;
-        let stdout = child.stdout.take().ok_or("Collector stdout unavailable")?;
+            .stderr(Stdio::null());
+        let mut child = aw_watcher_teams::owned_process::OwnedChild::spawn(&mut command)?;
+        let stdout = child
+            .child_mut()
+            .stdout
+            .take()
+            .ok_or("Collector stdout unavailable")?;
         let reader = thread::spawn(move || {
             let mut bytes = Vec::new();
             stdout
@@ -37,8 +43,9 @@ fn collect(script: &str, timeout: u64, collect_title: bool) -> Snapshot {
         });
         let start = Instant::now();
         loop {
-            if let Some(status) = child.try_wait()? {
+            if let Some(status) = child.child_mut().try_wait()? {
                 child.wait()?;
+                drop(child);
                 let output = reader.join().map_err(|_| "Collector reader failed")??;
                 if !status.success() || output.len() > 1_048_576 {
                     return Err("collector failed".into());
@@ -46,8 +53,9 @@ fn collect(script: &str, timeout: u64, collect_title: bool) -> Snapshot {
                 return Ok(serde_json::from_slice(&output)?);
             }
             if start.elapsed() > Duration::from_secs(timeout) {
-                child.kill()?;
+                child.child_mut().kill()?;
                 child.wait()?;
+                drop(child);
                 let _ = reader.join();
                 return Err("collector timeout".into());
             }
@@ -60,50 +68,39 @@ fn collect(script: &str, timeout: u64, collect_title: bool) -> Snapshot {
     })
 }
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let profile = std::env::var("AW_PROFILE").unwrap_or_default();
-    if !profile.is_empty() && profile != "default" {
-        return Err("Custom AW profiles unsupported".into());
-    }
-    let args: Vec<String> = std::env::args().collect();
-    if let Some(index) = args.iter().position(|a| a == "--check-config") {
-        let path = args.get(index + 1).ok_or("Config path required")?;
-        let config: Config = serde_json::from_slice(&fs::read(path)?)?;
-        config.validate()?;
-        return Ok(());
-    }
-    let base = PathBuf::from(std::env::var("LOCALAPPDATA")?)
-        .join("activitywatch")
-        .join("aw-watcher-teams");
-    fs::create_dir_all(&base)?;
-    let config_path = base.join("config.json");
-    if std::env::args().any(|a| a == "--init-config") {
-        if !config_path.exists() {
-            fs::write(&config_path, serde_json::to_vec_pretty(&Config::default())?)?;
+    let launch = Launch::current()?;
+    match launch.command {
+        LaunchCommand::Configure
+        | LaunchCommand::Logs
+        | LaunchCommand::Status
+        | LaunchCommand::About => return aw_watcher_teams::actions::dispatch(&launch),
+        LaunchCommand::Version => {
+            println!("{}", env!("CARGO_PKG_VERSION"));
+            return Ok(());
         }
-        println!("{}", config_path.display());
-        return Ok(());
-    }
-    if std::env::args().any(|a| a == "--settings") {
-        let status = Command::new("powershell.exe")
-            .env("AW_TEAMS_SETTINGS_EXE", std::env::current_exe()?)
-            .args([
-                "-NoProfile",
-                "-STA",
-                "-Command",
-                include_str!("../scripts/settings.ps1"),
-            ])
-            .status()?;
-        if !status.success() {
-            return Err("Settings UI failed".into());
+        LaunchCommand::Help => {
+            println!("aw-watcher-teams [--testing | --profile NAME] [--server URL] [--config PATH]\nconfigure | --settings | logs-ui | status-ui | about [--no-ui]\n--init-config | --check-config PATH | --version");
+            return Ok(());
         }
-        return Ok(());
+        LaunchCommand::Init => {
+            launch.ensure_config()?;
+            println!("{}", launch.config_path.display());
+            return Ok(());
+        }
+        LaunchCommand::Check => {
+            launch.config()?;
+            return Ok(());
+        }
+        LaunchCommand::Run => {}
     }
-    let config: Config = serde_json::from_slice(&fs::read(&config_path)?)?;
-    config.validate()?;
+    let config = launch.config()?;
+    fs::create_dir_all(&launch.base)?;
+    let base = &launch.base;
     let collect_title = config.collect_title();
     let title_format = config.effective_title_format();
     let server = validate_server(&config.server)?;
-    let _lock = aw_watcher_teams::lifecycle::acquire_module_lock(&base)?;
+    let _lock = aw_watcher_teams::lifecycle::acquire_module_lock(base)?;
+    let _ = privacy_log::append(base, Code::Started);
     let host = std::env::var("COMPUTERNAME").unwrap_or_else(|_| "local".into());
     let bucket = format!("aw-watcher-teams_{host}");
     let bucket_url = server.join(&format!("api/0/buckets/{bucket}"))?;
@@ -123,6 +120,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .with_title_format(title_format.clone());
     let mut last_status = String::new();
+    let mut delivery_pending = None;
     loop {
         let snapshot = collect(
             include_str!("../scripts/snapshot.ps1"),
@@ -132,13 +130,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let status = classify(&snapshot, collect_title).state;
         if status != last_status {
             eprintln!("Collector state: {status}");
+            let code = match status.as_str() {
+                "joined_candidate" => Code::JoinedCandidate,
+                "prejoin" => Code::Prejoin,
+                "ambiguous" => Code::Ambiguous,
+                _ => Code::Unknown,
+            };
+            let _ = privacy_log::append(base, code);
             last_status = status;
         }
         if let Some(event) = tracker.observe(&snapshot, chrono::Utc::now()) {
             writer.queue(event)?;
         }
-        if writer.flush().is_err() {
-            eprintln!("AW delivery pending; retrying saved sessions");
+        let pending = writer.flush().is_err();
+        if delivery_pending != Some(pending) {
+            let _ = privacy_log::append(
+                base,
+                if pending {
+                    Code::DeliveryPending
+                } else {
+                    Code::DeliveryAvailable
+                },
+            );
+            if pending {
+                eprintln!("AW delivery pending; retrying saved sessions");
+            }
+            delivery_pending = Some(pending);
         }
         thread::sleep(Duration::from_secs(config.interval_seconds));
     }

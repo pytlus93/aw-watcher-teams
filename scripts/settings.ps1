@@ -1,6 +1,9 @@
 param([string]$ConfigPath, [switch]$ValidateOnly)
 $ErrorActionPreference='Stop'
-if (-not $ConfigPath) { $ConfigPath=Join-Path $env:LOCALAPPDATA 'activitywatch\aw-watcher-teams\config.json' }
+if (-not $ConfigPath) {
+ if ($env:AW_TEAMS_CONFIG_PATH) { $ConfigPath=$env:AW_TEAMS_CONFIG_PATH }
+ else { throw 'Launch settings through aw-watcher-teams configure so profile/config resolution is shared' }
+}
 $config = [IO.File]::ReadAllText($ConfigPath) | ConvertFrom-Json
 if (-not $config.PSObject.Properties['title_format']) { $config | Add-Member title_format ([pscustomobject]@{include_organization=$true;include_account=$false;organization_map=[pscustomobject]@{};separator=' | '}) }
 if (-not $config.PSObject.Properties['collect_meeting_title']) { $config | Add-Member collect_meeting_title $false }
@@ -13,7 +16,7 @@ if ($ValidateOnly) { $config | ConvertTo-Json -Depth 10 -Compress; return }
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 $form=New-Object Windows.Forms.Form
-$form.Text='MS Teams module settings'
+$form.Text='MS Teams module settings - ' + $env:AW_TEAMS_SETTINGS_PROFILE
 $form.ClientSize=New-Object Drawing.Size(550,650)
 $form.StartPosition='CenterScreen'
 $layout=New-Object Windows.Forms.FlowLayoutPanel
@@ -52,8 +55,18 @@ $save.Add_Click({
   $config.title_format.include_organization=$organization.Checked;$config.title_format.include_account=$account.Checked
   $temp=$ConfigPath+'.settings-'+[Guid]::NewGuid().ToString('N')
   [IO.File]::WriteAllText($temp,($config|ConvertTo-Json -Depth 10),[Text.UTF8Encoding]::new($false))
-  & $env:AW_TEAMS_SETTINGS_EXE --check-config $temp
-  if($LASTEXITCODE -ne 0){throw 'Settings validation failed'}
+  $taskProtocol=$env:AW_MODULE_ACTION_PROTOCOL
+  $taskAction=$env:AW_MODULE_ACTION
+  try {
+   $env:AW_MODULE_ACTION_PROTOCOL=$null
+   $env:AW_MODULE_ACTION=$null
+   & $env:AW_TEAMS_SETTINGS_EXE --check-config $temp
+   $taskValidationExit=$LASTEXITCODE
+  } finally {
+   $env:AW_MODULE_ACTION_PROTOCOL=$taskProtocol
+   $env:AW_MODULE_ACTION=$taskAction
+  }
+  if($taskValidationExit -ne 0){throw 'Settings validation failed'}
   $backup=$ConfigPath+'.before-settings-'+(Get-Date -Format 'yyyyMMdd-HHmmss')
   [IO.File]::Replace($temp,$ConfigPath,$backup)
   $form.Close()

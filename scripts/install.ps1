@@ -4,7 +4,11 @@ param(
     [switch]$NoAutostart
 )
 $ErrorActionPreference = 'Stop'
-if ($env:AW_PROFILE -and $env:AW_PROFILE -ne 'default') { throw 'Custom AW profiles are not supported yet' }
+$taskProfile=$env:AW_PROFILE
+if (-not $taskProfile) { $taskProfile=if($env:AW_TESTING -eq '1'){'testing'}else{'default'} }
+if ($taskProfile -notmatch '^[a-z0-9][a-z0-9_-]{0,31}$') {throw 'Invalid AW profile'}
+if ($env:AW_TESTING -and $env:AW_TESTING -notin @('0','1')) {throw 'Invalid AW_TESTING'}
+if ($env:AW_TESTING -eq '1' -and $taskProfile -ne 'testing') {throw 'Conflicting profile/testing context'}
 # Works both in the source checkout and alongside the executable in the ZIP.
 if (-not $Executable) {
     $Executable = Join-Path $PSScriptRoot 'aw-watcher-teams.exe'
@@ -20,20 +24,32 @@ if (-not (Test-Path -LiteralPath $Executable -PathType Leaf)) { throw 'Build the
 $destination = Join-Path $installRoot 'aw-watcher-teams'
 New-Item -ItemType Directory -Path $destination -Force | Out-Null
 $installedExe = Join-Path $destination 'aw-watcher-teams.exe'
+$taskManifest=$Executable+'.actions.json'
+$taskInstalledManifest=$installedExe+'.actions.json'
+if (Test-Path -LiteralPath $taskManifest) {
+    $taskActions=[IO.File]::ReadAllText($taskManifest)|ConvertFrom-Json
+    if($taskActions.schema_version -ne 1 -or $taskActions.module -ne 'aw-watcher-teams'){throw 'Invalid module actions manifest'}
+}
+if(Test-Path -LiteralPath $installedExe){Copy-Item -LiteralPath $installedExe -Destination ($installedExe+'.before-teams') -Force}
+if(Test-Path -LiteralPath $taskInstalledManifest){Copy-Item -LiteralPath $taskInstalledManifest -Destination ($taskInstalledManifest+'.before-teams') -Force}
 Copy-Item -LiteralPath $Executable -Destination $installedExe -Force
-$taskShortcut = (New-Object -ComObject WScript.Shell).CreateShortcut((Join-Path $destination 'Settings.lnk'))
-$taskShortcut.TargetPath = $installedExe
-$taskShortcut.Arguments = '--settings'
-$taskShortcut.WorkingDirectory = $destination
-$taskShortcut.Save()
+if(Test-Path -LiteralPath $taskManifest){
+    Copy-Item -LiteralPath $taskManifest -Destination $taskInstalledManifest -Force
+    $taskShortcut = (New-Object -ComObject WScript.Shell).CreateShortcut((Join-Path $destination 'Settings.lnk'))
+    $taskShortcut.TargetPath = $installedExe
+    $taskShortcut.Arguments = 'configure'
+    $taskShortcut.WorkingDirectory = $destination
+    $taskShortcut.Save()
+}else{
+    # Rolling back to a binary without actions must not leave advertised commands.
+    if(Test-Path -LiteralPath $taskInstalledManifest){Remove-Item -LiteralPath $taskInstalledManifest}
+    $taskShortcutPath=Join-Path $destination 'Settings.lnk'
+    if(Test-Path -LiteralPath $taskShortcutPath){Remove-Item -LiteralPath $taskShortcutPath}
+}
 $configPath = & $installedExe --init-config
 if ($LASTEXITCODE -ne 0) { throw 'Config initialization failed' }
 if (-not $NoAutostart) {
-    $profile = $env:AW_PROFILE
-    if ($profile -and $profile -ne 'default') {
-        if ($profile -notmatch '^[A-Za-z0-9_-]+$') { throw 'Invalid AW_PROFILE' }
-        $appName = "activitywatch-$profile"
-    } else { $appName = 'activitywatch' }
+    $appName=if($taskProfile -eq 'default'){'activitywatch'}else{"activitywatch-$taskProfile"}
     $qtDir = Join-Path (Join-Path (Join-Path $env:LOCALAPPDATA $appName) $appName) 'aw-qt'
     New-Item -ItemType Directory -Path $qtDir -Force | Out-Null
     $qtConfig = Join-Path $qtDir 'aw-qt.toml'
