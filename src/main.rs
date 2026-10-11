@@ -94,27 +94,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .write(true)
         .open(base.join("module.lock"))?;
     lock.try_lock_exclusive()?;
-    let agent = ureq::AgentBuilder::new()
-        .timeout(Duration::from_secs(3))
-        .redirects(0)
-        .build();
     let host = std::env::var("COMPUTERNAME").unwrap_or_else(|_| "local".into());
     let bucket = format!("aw-watcher-teams_{host}");
     let bucket_url = server.join(&format!("api/0/buckets/{bucket}"))?;
-    loop {
-        match agent
-            .post(bucket_url.as_str())
-            .send_json(serde_json::json!({
-                "client":"aw-watcher-teams","type":"call-evidence","hostname":host
-            })) {
-            Ok(_) => break,
-            Err(ureq::Error::Status(304, _)) => break,
-            Err(_) => {
-                eprintln!("AW unavailable; retrying bucket creation");
-                thread::sleep(Duration::from_secs(5));
-            }
-        }
-    }
+    // Collection starts immediately, even before AW is available.
+    // AwWriter owns idempotent bucket initialization and recovery.
     let mut writer = AwWriter::new(bucket_url.to_string(), base.join("session-delivery.json"))?;
     writer.reformat_pending_titles(config.collect_meeting_title, &config.title_format)?;
     let namespace = format!(

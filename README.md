@@ -159,3 +159,13 @@ historical metadata; later observations can supply it again.
 protocol test. New checks cover mappings, privacy options, custom separators, long
 topics, topic pipes, legacy caption migration and replay without repeated aliasing.
 The real AW test confirms formatting changes leave one event and its duration intact.
+
+0.3.1 startup/delivery recovery: invalid delivery checkpoints are preserved in a
+uniquely named .corrupt-* file and startup continues with an empty queue. Unsent
+records in a damaged file cannot be recovered. Checkpoint writes sync file contents
+before replacement. Collection begins while AW is unavailable; bucket initialization
+and missing-bucket recovery belong to delivery retries. Events use the API list form.
+Validation: 46 automated tests passed, including zero-filled checkpoint recovery,
+existing-bucket 304, producer restart, late AW startup, socket outage/server restart,
+lost replies and stale event IDs. Transport recovery tests use synthetic loopback
+fixtures; real-server restart and Rust-server acceptance remain unverified.

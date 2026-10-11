@@ -1,7 +1,7 @@
 use crate::{SessionData, SessionEvent};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::{fs, path::PathBuf, time::Duration};
+use std::{collections::HashSet, fs, path::PathBuf, time::Duration};
 
 #[derive(Clone, Serialize, Deserialize)]
 struct Pending {
@@ -17,14 +17,32 @@ pub struct AwWriter {
     bucket_url: String,
     checkpoint: PathBuf,
     pending: Vec<Pending>,
+    initialized: bool,
+    verified: HashSet<String>,
 }
 impl AwWriter {
     pub fn new(
         bucket_url: String,
         checkpoint: PathBuf,
     ) -> Result<Self, Box<dyn std::error::Error>> {
+        crate::validate_server(&bucket_url)?;
         let pending = if checkpoint.exists() {
-            serde_json::from_slice(&fs::read(&checkpoint)?)?
+            match serde_json::from_slice(&fs::read(&checkpoint)?) {
+                Ok(pending) => pending,
+                Err(_) => {
+                    let backup = checkpoint.with_extension(format!(
+                        "corrupt-{}-{}",
+                        chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default(),
+                        std::process::id()
+                    ));
+                    fs::rename(&checkpoint, &backup)?;
+                    eprintln!(
+                        "Damaged delivery checkpoint preserved at {}; unsent data may be lost",
+                        backup.display()
+                    );
+                    Vec::new()
+                }
+            }
         } else {
             Vec::new()
         };
@@ -36,11 +54,17 @@ impl AwWriter {
             bucket_url,
             checkpoint,
             pending,
+            initialized: false,
+            verified: HashSet::new(),
         })
     }
     fn save(&self) -> Result<(), Box<dyn std::error::Error>> {
         let temp = self.checkpoint.with_extension("tmp");
-        fs::write(&temp, serde_json::to_vec(&self.pending)?)?;
+        use std::io::Write;
+        let mut file = fs::File::create(&temp)?;
+        file.write_all(&serde_json::to_vec(&self.pending)?)?;
+        file.sync_all()?;
+        drop(file);
         fs::rename(temp, &self.checkpoint)?;
         Ok(())
     }
@@ -96,13 +120,61 @@ impl AwWriter {
             .find(|e| e["data"]["session_id"].as_str() == Some(&item.event.data.session_id))
             .and_then(|e| e["id"].as_u64()))
     }
+    fn initialize_bucket(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        let hostname = std::env::var("COMPUTERNAME").unwrap_or_else(|_| "local".into());
+        let response = self
+            .agent
+            .post(&self.bucket_url)
+            .send_json(serde_json::json!({
+                "client":"aw-watcher-teams", "type":"call-evidence", "hostname":hostname
+            }));
+        // 304 is success ONLY for bucket creation, not arbitrary transport requests.
+        let created = match response {
+            Ok(r) if r.status() == 304 => false,
+            Ok(r) if r.status() == 200 || r.status() == 201 => true,
+            Err(ureq::Error::Status(304, _)) => false,
+            _ => return Err("Bucket initialization unavailable".into()),
+        };
+        let metadata: Value = self.agent.get(&self.bucket_url).call()?.into_json()?;
+        if metadata["type"].as_str() != Some("call-evidence") {
+            return Err("Existing bucket has an incompatible event type".into());
+        }
+        self.verified.clear();
+        if created {
+            // A lost/recreated database cannot reuse old event IDs.
+            for item in &mut self.pending {
+                item.id = None;
+                item.may_exist = false;
+                item.dirty = true;
+            }
+            self.save()?;
+        }
+        self.initialized = true;
+        Ok(())
+    }
     pub fn flush(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        let result = self.flush_inner();
+        if result.is_err() {
+            self.initialized = false;
+            self.verified.clear();
+        }
+        result
+    }
+    fn flush_inner(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        if !self.initialized {
+            self.initialize_bucket()?;
+        }
         for index in 0..self.pending.len() {
             if !self.pending[index].dirty {
                 continue;
             }
-            if self.pending[index].id.is_none() && self.pending[index].may_exist {
+            let session_id = self.pending[index].event.data.session_id.clone();
+            if !self.verified.contains(&session_id)
+                && (self.pending[index].id.is_some() || self.pending[index].may_exist)
+            {
+                // Never overwrite another session if a restored database reused an ID.
                 self.pending[index].id = self.recover_id(&self.pending[index])?;
+                self.verified.insert(session_id.clone());
             }
             self.pending[index].may_exist = true;
             self.save()?;
@@ -113,7 +185,7 @@ impl AwWriter {
             let response: Value = self
                 .agent
                 .post(&format!("{}/events", self.bucket_url))
-                .send_json(body)?
+                .send_json(serde_json::json!([body]))?
                 .into_json()?;
             let id = response
                 .as_array()
@@ -128,6 +200,7 @@ impl AwWriter {
             if self.pending[index].id.is_none() {
                 return Err("AW event acknowledgement unavailable".into());
             }
+            self.verified.insert(session_id);
             self.pending[index].dirty = false;
             self.save()?;
         }
