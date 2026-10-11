@@ -1,4 +1,4 @@
-# MS Teams ActivityWatch module (0.3)
+# MS Teams ActivityWatch module (0.4)
 
 Local AW-managed Windows worker with a reusable Rust session tracker. No Graph,
 Teams cloud API, audio/video recording, injection, message bodies, credentials or roster.
@@ -14,7 +14,7 @@ its Win32 caption is empty/generic. No arbitrary text nodes/chat headings are se
 Root name/caption may still be generic or absent; then context remains unavailable.
 
 data.title contains the topic and configured context labels with the Teams suffix removed.
-No app/watcher prefix is added. meeting_title carries the topic; title_source carries provenance. See title_format below.
+No app/watcher prefix is added. In extended mode, selected meeting_title/title_source properties carry topic/provenance. See title_format below.
 Fallbacks are Call (title unavailable) and Meeting (title unavailable).
 call_kind is meeting only when a recognized meeting-info control is exposed; otherwise
 unknown. A topic alone does not prove meeting vs 1:1/group call.
@@ -42,17 +42,24 @@ meeting toolbar may require future validated reconciliation.
 Failure, loss of qualifying controls, different window/process or a large clock gap
 starts a fresh observed interval. Thus an actual call can still have separated
 evidence intervals when observation fails. It never claims those gaps were attended.
-Collector sleep uses bounded wall-clock spacing. Explicit Windows suspend/lock events
-and attention/AFK integration remain future work; call duration is separate from work time.
+Collector sleep uses bounded wall-clock spacing. The collector now rejects lock/secure desktop before inspecting UI. Suspend is
+bounded by sampling-gap checks rather than explicit power notifications. Attention/AFK
+integration remains separate work; these intervals are call evidence, not work time.
 
 ## Delivery
 POST /events inserts a positive session event; subsequent POSTs use its returned ID
 to replace only that event. A local atomic session-delivery.json checkpoint persists
-queued updates and IDs. A lost insertion reply is recovered by querying this bucket
-for the local session_id before re-insertion. Completed failed sessions remain queued;
+queued updates and IDs. A lost insertion reply is recovered using a selected local session_id or the original
+start timestamp at AW millisecond precision; ambiguous matches fail closed. See
+[the contract](docs/DATA-CONTRACT.md) for strict-mode reconciliation. Completed failed sessions remain queued;
 backlog is capped at 1000. The latest acknowledged session is retained for updates.
 Restarts preserve delivery but start new detection identity; they do not infer that a
 call survived the worker's downtime. No old history is deleted or reconstructed.
+
+Strict mode (the new/missing-config default) sends only the workspace-required title;
+extended mode adds individually selected fields. This is a custom bucket with no
+official data schema. [Every field, defaults and migration](docs/DATA-CONTRACT.md)
+and [current evidence/limitations](docs/VALIDATION.md) are documented separately.
 
 The custom call-evidence bucket ID is aw-watcher-teams_<hostname>. The installed
 Python AW server ignores a creation name field and its public update route does not
@@ -77,7 +84,10 @@ Fields: server, interval_seconds (2..60), collector_timeout_seconds (1..15),
 collect_meeting_title (bool, default false), title_format (optional object). Existing config files remain compatible.
 The collector runs in a hidden bounded subprocess. Single-instance lock prevents
 duplicate workers. Custom AW_PROFILE directories are explicitly unsupported.
-No dedicated settings UI exists yet; JSON settings and AW Modules are the current host interface.
+Run the module with --settings (or Settings.lnk in the installed module directory)
+for mode/field/privacy choices. Use AW Modules to restart it after saving. Mapping,
+separator, server and timing still use JSON. The dialog has no direct tray-menu entry;
+visual behavior has not been verified in this validation run.
 
 ## Validation on 2026-10-08
 20 automated tests passed: hour-long accumulation, positive-only records, privacy,
@@ -140,7 +150,7 @@ a mapping key; unknown pipe-separated topic text is not guessed to be an organiz
 These rules are based on the observed desktop caption format; new Teams formats
 may need another parser profile.
 
-data.meeting_title now stores only the topic; data.organization retains the permitted
+When selected in extended mode, data.meeting_title stores only the topic; data.organization retains the permitted
 canonical organization so replay does not chain aliases. The shortened label is used
 in data.title. Disabled account/organization fields are omitted from emitted metadata
 as well as titles. Account collection is off by default; email in an actual meeting
@@ -158,7 +168,7 @@ historical metadata; later observations can supply it again.
 0.3 validation: 37 automated tests passed, plus the explicit installed-AW synthetic
 protocol test. New checks cover mappings, privacy options, custom separators, long
 topics, topic pipes, legacy caption migration and replay without repeated aliasing.
-The real AW test confirms formatting changes leave one event and its duration intact.
+The historical real AW test confirms formatting changes leave one event and its duration intact.
 
 0.3.1 startup/delivery recovery: invalid delivery checkpoints are preserved in a
 uniquely named .corrupt-* file and startup continues with an empty queue. Unsent
@@ -169,3 +179,11 @@ Validation: 46 automated tests passed, including zero-filled checkpoint recovery
 existing-bucket 304, producer restart, late AW startup, socket outage/server restart,
 lost replies and stale event IDs. Transport recovery tests use synthetic loopback
 fixtures; real-server restart and Rust-server acceptance remain unverified.
+
+
+## Current source validation (0.4)
+Use scripts/build.ps1 -Test -Package. This run does not deploy its package.
+See docs/VALIDATION.md for exact current results, isolated server commands, lifecycle
+boundaries and remaining host/UI requirements. Historical counts above describe the
+older versions rather than current acceptance. No hard reboot or live host crash was
+performed. A login shortcut alone does not prove hard-restart recovery.
