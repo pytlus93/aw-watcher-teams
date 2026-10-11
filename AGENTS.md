@@ -33,3 +33,7 @@ process by name or target production history. The opt-in lock probe is a develop
 example only; do not include it in installed packages. Settings/collector script
 tests must use ValidateOnly/ValidateInterop to avoid UI and private collection.
 Keep build, synthetic, isolated real-server, UI and installed-host evidence separate.
+
+GitHub Actions are unavailable for this setup. Do not add, enable or depend on
+workflows. Run reproducible local scripts and record actual local results. Preserve
+any inherited upstream workflow files unless removal is explicitly requested.

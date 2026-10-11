@@ -109,3 +109,8 @@ References: [AW REST API](https://docs.activitywatch.net/en/latest/api/rest.html
 [upstream manager](https://github.com/ActivityWatch/aw-qt/blob/master/aw_qt/manager.py),
 [upstream tray](https://github.com/ActivityWatch/aw-qt/blob/master/aw_qt/trayicon.py).
 See DATA-CONTRACT.md for every data field and settings migration.
+
+All results above came from local commands; no GitHub Actions workflow was added,
+enabled or used. GitHub Actions are unavailable for this setup. The reproducible
+entry point is scripts/build.ps1 -Test -Package; isolated opt-in commands are listed
+above. Preserve inherited upstream workflows if any are introduced by a later import.
