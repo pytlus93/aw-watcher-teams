@@ -37,3 +37,5 @@ Keep build, synthetic, isolated real-server, UI and installed-host evidence sepa
 GitHub Actions are unavailable for this setup. Do not add, enable or depend on
 workflows. Run reproducible local scripts and record actual local results. Preserve
 any inherited upstream workflow files unless removal is explicitly requested.
+
+Module actions follow ../aw-qt/docs/module-actions.md protocol 1. Dispatch before locking or collecting; producer and actions share profile/config/server resolution. Preserve the full executable filename in the matching sidecar. Unknown commands fail. Keep helpers owned by the direct action process; package no development probes.

@@ -114,3 +114,25 @@ All results above came from local commands; no GitHub Actions workflow was added
 enabled or used. GitHub Actions are unavailable for this setup. The reproducible
 entry point is scripts/build.ps1 -Test -Package; isolated opt-in commands are listed
 above. Preserve inherited upstream workflows if any are introduced by a later import.
+
+## Local module actions validation (0.5, 2026-10-11)
+
+scripts/build.ps1 -Test -Package passed: 64 tests, Clippy with warnings denied,
+and the release ZIP. Four opt-in tests remain excluded from the normal suite.
+The separately built owned_action example and action_children opt-in test also passed:
+killing the synthetic owner terminated its PowerShell child. This is isolated job
+ownership evidence, not installed AW tray shutdown or live producer crash evidence.
+
+Eight action tests cover shared profile/testing resolution, manual overrides,
+malformed context and unknown commands, every manifest action dispatched while the
+producer lock is held and the server is offline, synthetic info/testing mismatch,
+privacy-safe logs, manual settings alias, and isolated installer sidecar copy/removal.
+The rollback fixture uses a current binary with its sidecar absent, not an older
+binary compatibility run. No settings dialog, live Teams collection, installed tray,
+production process restart, deployment or reboot was exercised.
+
+The 0.4 real-server results above remain historical evidence; those opt-in server
+runs were not repeated for 0.5. Transport regression tests passed. The 0.5 collector
+now shares the owned-helper job guard; older helper-lifetime limitations above apply
+to the older version. Settings visual/save behavior and the upgraded host submenu
+still need separate validation. See TRAY-ACTIONS.md for protocol and rollback details.

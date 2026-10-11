@@ -65,8 +65,7 @@ topic capture when all personal caption text must be excluded.
 Run the installed module with --settings, or use its Settings.lnk after installing
 0.4. This launches the module's embedded Windows dialog, not another watcher.
 It exposes mode, every extra field, caption permission, and title-context switches.
-Existing organization mappings, server and timing are retained. The host tray
-does not currently have a direct Teams-settings menu action. Mapping/separator and
+Existing organization mappings, server and timing are retained. Hosts supporting module actions protocol 1 expose settings via the matching sidecar; older trays retain manual --settings access. Mapping/separator and
 server/timing changes still use config.json. Restart **only through AW's Modules
 menu** after saving; directly launching a worker makes the tray lose ownership.
 
