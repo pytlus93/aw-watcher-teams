@@ -1,4 +1,4 @@
-param([switch]$CollectMeetingTitle)
+param([switch]$CollectMeetingTitle, [switch]$ValidateInterop)
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 Add-Type -AssemblyName UIAutomationClient
@@ -9,13 +9,24 @@ using System;
 using System.Text;
 using System.Runtime.InteropServices;
 public static class TeamsWindows {
+ [DllImport("user32.dll", SetLastError=true)] public static extern IntPtr OpenInputDesktop(uint flags, bool inherit, uint access);
+ [DllImport("user32.dll")] public static extern bool CloseDesktop(IntPtr desktop);
+ [DllImport("user32.dll", CharSet=CharSet.Unicode, SetLastError=true)] public static extern bool GetUserObjectInformation(IntPtr desktop, int index, StringBuilder name, uint size, out uint needed);
+ public static bool UnlockedDesktop() {
+  IntPtr d=OpenInputDesktop(0,false,1);
+  if(d==IntPtr.Zero) return false;
+  try { uint needed; var name=new StringBuilder(256); return GetUserObjectInformation(d,2,name,512,out needed) && name.ToString()=="Default"; }
+  finally { CloseDesktop(d); }
+ }
  public delegate bool Callback(IntPtr h, IntPtr p);
  [DllImport("user32.dll")] public static extern bool EnumWindows(Callback cb, IntPtr p);
  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
  [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr h, StringBuilder text, int count);
 }
 '@
+if ($ValidateInterop) { 'Interop compiled'; return }
 try {
+ if (-not [TeamsWindows]::UnlockedDesktop()) { '{"collector_ok":false,"windows":[]}'; return }
  $pids = @{}
  Get-Process -Name ms-teams -ErrorAction SilentlyContinue | ForEach-Object {
   $pids[[uint32]$_.Id] = "$($_.Id):$($_.StartTime.ToUniversalTime().Ticks)"

@@ -19,6 +19,9 @@ pub struct AwWriter {
     pending: Vec<Pending>,
     initialized: bool,
     verified: HashSet<String>,
+    payload: crate::payload::PayloadConfig,
+    collect_title: bool,
+    title_format: crate::title::TitleFormat,
 }
 impl AwWriter {
     pub fn new(
@@ -56,7 +59,27 @@ impl AwWriter {
             pending,
             initialized: false,
             verified: HashSet::new(),
+            payload: crate::payload::PayloadConfig::default(),
+            collect_title: true,
+            title_format: crate::title::TitleFormat::default(),
         })
+    }
+    pub fn configure_payload(
+        &mut self,
+        payload: crate::payload::PayloadConfig,
+        collect_title: bool,
+        format: crate::title::TitleFormat,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        self.title_format = payload.title_format(&format);
+        self.collect_title = payload.collect_title(collect_title);
+        self.payload = payload;
+        self.reformat_pending_titles(self.collect_title, &self.title_format.clone())?;
+        // Payload changes must replace the latest retained event, including extension removal.
+        for item in &mut self.pending {
+            item.dirty = true;
+            self.payload.apply_privacy(&mut item.event.data.activity);
+        }
+        self.save()
     }
     fn save(&self) -> Result<(), Box<dyn std::error::Error>> {
         let temp = self.checkpoint.with_extension("tmp");
@@ -68,10 +91,16 @@ impl AwWriter {
         fs::rename(temp, &self.checkpoint)?;
         Ok(())
     }
-    pub fn queue(&mut self, event: SessionEvent) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn queue(&mut self, mut event: SessionEvent) -> Result<(), Box<dyn std::error::Error>> {
         if !event.duration.is_finite() || event.duration <= 0.0 {
             return Err("Only positive-duration session events may be stored".into());
         }
+        crate::reformat_activity(
+            &mut event.data.activity,
+            self.collect_title,
+            &self.title_format,
+        );
+        self.payload.apply_privacy(&mut event.data.activity);
         if let Some(existing) = self
             .pending
             .iter_mut()
@@ -97,9 +126,16 @@ impl AwWriter {
         collect_title: bool,
         format: &crate::title::TitleFormat,
     ) -> Result<(), Box<dyn std::error::Error>> {
+        self.collect_title = self.payload.collect_title(collect_title);
+        self.title_format = self.payload.title_format(format);
         for item in &mut self.pending {
             let before = item.event.data.activity.clone();
-            crate::reformat_activity(&mut item.event.data.activity, collect_title, format);
+            crate::reformat_activity(
+                &mut item.event.data.activity,
+                self.collect_title,
+                &self.title_format,
+            );
+            self.payload.apply_privacy(&mut item.event.data.activity);
             if item.event.data.activity != before {
                 item.dirty = true;
             }
@@ -115,11 +151,24 @@ impl AwWriter {
             .append_pair("start", &item.event.timestamp.to_rfc3339())
             .append_pair("limit", "-1");
         let events: Vec<Value> = self.agent.get(url.as_str()).call()?.into_json()?;
-        Ok(events
+        let matches: Vec<_> = events
             .iter()
-            .find(|e| e["data"]["session_id"].as_str() == Some(&item.event.data.session_id))
-            .and_then(|e| e["id"].as_u64()))
+            .filter(|e| match e["data"]["session_id"].as_str() {
+                Some(id) => id == item.event.data.session_id,
+                None => e["timestamp"]
+                    .as_str()
+                    .and_then(|s| s.parse::<chrono::DateTime<chrono::Utc>>().ok())
+                    .is_some_and(|stamp| {
+                        stamp.timestamp_millis() == item.event.timestamp.timestamp_millis()
+                    }),
+            })
+            .collect();
+        if matches.len() > 1 {
+            return Err("Ambiguous session recovery; refusing to overwrite events".into());
+        }
+        Ok(matches.first().and_then(|e| e["id"].as_u64()))
     }
+
     fn initialize_bucket(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         let hostname = std::env::var("COMPUTERNAME").unwrap_or_else(|_| "local".into());
         let response = self
@@ -178,15 +227,18 @@ impl AwWriter {
             }
             self.pending[index].may_exist = true;
             self.save()?;
-            let mut body = serde_json::to_value(&self.pending[index].event)?;
-            if let Some(id) = self.pending[index].id {
-                body["id"] = id.into();
-            }
-            let response: Value = self
+            let body = serde_json::to_string(&[self
+                .payload
+                .wire(&self.pending[index].event, self.pending[index].id)])?;
+            let reply = self
                 .agent
                 .post(&format!("{}/events", self.bucket_url))
-                .send_json(serde_json::json!([body]))?
-                .into_json()?;
+                .set("Content-Type", "application/json")
+                .send_string(&body)?;
+            if reply.status() != 200 {
+                return Err("AW event write was not acknowledged".into());
+            }
+            let response: Value = reply.into_json()?;
             let id = response
                 .as_array()
                 .and_then(|a| a.first())
@@ -283,6 +335,13 @@ mod protocol_tests {
             data: event_data(activity, "synthetic-session-1".into()),
         };
         let mut writer = AwWriter::new(url.clone(), checkpoint.clone()).unwrap();
+        writer
+            .configure_payload(
+                crate::payload::PayloadConfig::extended(),
+                true,
+                Default::default(),
+            )
+            .unwrap();
         writer.queue(event.clone()).unwrap();
         writer.flush().unwrap();
         let id = writer.pending[0].id.unwrap();
@@ -299,6 +358,13 @@ mod protocol_tests {
         writer.save().unwrap();
         drop(writer);
         let mut writer = AwWriter::new(url.clone(), checkpoint.clone()).unwrap();
+        writer
+            .configure_payload(
+                crate::payload::PayloadConfig::extended(),
+                true,
+                Default::default(),
+            )
+            .unwrap();
         writer.flush().unwrap();
         assert_eq!(writer.pending[0].id, Some(id));
         let records: Vec<Value> = guard
@@ -324,6 +390,9 @@ mod protocol_tests {
         assert!(records[0]["data"]["meeting_title"].is_null());
         assert_eq!(records[0]["data"]["title"], "Call (title unavailable)");
         // Migrate the old caption shape and update only this event's title/metadata.
+        writer
+            .reformat_pending_titles(true, &Default::default())
+            .unwrap();
         event.data.activity.schema_version = 2;
         event.data.activity.meeting_title =
             Some("Echo | Example Company Ltd. | self@example.invalid".into());

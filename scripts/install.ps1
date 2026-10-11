@@ -21,6 +21,11 @@ $destination = Join-Path $installRoot 'aw-watcher-teams'
 New-Item -ItemType Directory -Path $destination -Force | Out-Null
 $installedExe = Join-Path $destination 'aw-watcher-teams.exe'
 Copy-Item -LiteralPath $Executable -Destination $installedExe -Force
+$taskShortcut = (New-Object -ComObject WScript.Shell).CreateShortcut((Join-Path $destination 'Settings.lnk'))
+$taskShortcut.TargetPath = $installedExe
+$taskShortcut.Arguments = '--settings'
+$taskShortcut.WorkingDirectory = $destination
+$taskShortcut.Save()
 $configPath = & $installedExe --init-config
 if ($LASTEXITCODE -ne 0) { throw 'Config initialization failed' }
 if (-not $NoAutostart) {

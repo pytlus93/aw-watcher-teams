@@ -348,7 +348,7 @@ fn reused_id_after_database_restore_does_not_overwrite_other_session() {
     let s = server.state.lock().unwrap();
     assert_eq!(s.events.len(), 2);
     assert_eq!(s.events[&1]["data"]["session_id"], "unrelated");
-    assert_eq!(s.events[&2]["data"]["session_id"], "one");
+    assert_eq!(s.events[&2]["data"]["title"], "Synthetic planning");
 }
 
 #[test]
@@ -384,4 +384,83 @@ fn corrupt_checkpoint_is_preserved_and_startup_recovers() {
     )
     .is_ok());
     fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn collection_gap_is_preserved_through_delivery_retry() {
+    let mut server = Server::offline();
+    let path = checkpoint("gaps");
+    let mut writer = AwWriter::new(server.url(), path).unwrap();
+    let mut tracker = aw_watcher_teams::Tracker::new("gap".into(), 15.0, true);
+    let s = Snapshot {
+        collector_ok: true,
+        windows: vec![Window {
+            key: "synthetic".into(),
+            leave: true,
+            microphone: true,
+            ..Default::default()
+        }],
+    };
+    let start = event("one", 5.0).timestamp;
+    assert!(tracker.observe(&s, start).is_none());
+    writer
+        .queue(
+            tracker
+                .observe(&s, start + chrono::Duration::seconds(5))
+                .unwrap(),
+        )
+        .unwrap();
+    assert!(writer.flush().is_err());
+    assert!(tracker
+        .observe(&Snapshot::default(), start + chrono::Duration::seconds(10))
+        .is_none());
+    assert!(tracker
+        .observe(&s, start + chrono::Duration::seconds(100))
+        .is_none());
+    writer
+        .queue(
+            tracker
+                .observe(&s, start + chrono::Duration::seconds(105))
+                .unwrap(),
+        )
+        .unwrap();
+    server.start();
+    writer.flush().unwrap();
+    let state = server.state.lock().unwrap();
+    assert_eq!(state.events.len(), 2);
+    let sum: f64 = state
+        .events
+        .values()
+        .map(|e| e["duration"].as_f64().unwrap())
+        .sum();
+    assert_eq!(sum, 10.0);
+    let stamps: Vec<_> = state
+        .events
+        .values()
+        .map(|e| e["timestamp"].clone())
+        .collect();
+    assert!(stamps.contains(&json!(start)));
+    assert!(stamps.contains(&json!(start + chrono::Duration::seconds(100))));
+}
+#[test]
+fn strict_timestamp_collision_fails_closed_without_overwriting_history() {
+    let mut server = Server::offline();
+    server.start();
+    let path = checkpoint("collision");
+    let mut writer = AwWriter::new(server.url(), path.clone()).unwrap();
+    writer.queue(event("one", 5.0)).unwrap();
+    writer.flush().unwrap();
+    drop(writer);
+    {
+        let mut s = server.state.lock().unwrap();
+        let mut duplicate = s.events[&1].clone();
+        duplicate["id"] = 2.into();
+        s.events.insert(2, duplicate);
+    }
+    let mut writer = AwWriter::new(server.url(), path).unwrap();
+    writer.queue(event("one", 10.0)).unwrap();
+    assert!(writer.flush().is_err());
+    let state = server.state.lock().unwrap();
+    assert_eq!(state.events.len(), 2);
+    assert_eq!(state.writes, 1);
 }

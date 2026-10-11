@@ -1,5 +1,8 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+pub mod config;
+pub mod lifecycle;
+pub mod payload;
 pub mod title;
 use title::{Context, TitleFormat};
 
@@ -26,6 +29,7 @@ pub struct Activity {
     pub schema_version: u32,
     pub app: String,
     pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub meeting_title: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub organization: Option<String>,
@@ -35,6 +39,7 @@ pub struct Activity {
     pub state: String,
     pub assessment: String,
     pub evidence: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title_source: Option<String>,
 }
 pub fn readable_title(raw: Option<&str>) -> Option<String> {
