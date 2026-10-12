@@ -4,23 +4,23 @@
   "actions": [
     {
       "id": "configure",
-      "label": "Configuration and privacy…",
+      "label": "Settings…",
       "args": [
         "configure"
       ]
     },
     {
-      "id": "logs",
-      "label": "Operational log…",
+      "id": "status",
+      "label": "Status…",
       "args": [
-        "logs-ui"
+        "status-ui"
       ]
     },
     {
-      "id": "status",
-      "label": "Server reachability…",
+      "id": "logs",
+      "label": "Logs…",
       "args": [
-        "status-ui"
+        "logs-ui"
       ]
     },
     {

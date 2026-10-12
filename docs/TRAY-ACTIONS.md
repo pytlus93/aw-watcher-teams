@@ -47,3 +47,7 @@ existing files with .before-teams. Installing a binary without a source sidecar 
 the stale installed sidecar and Settings.lnk. For rollback, restore a matching
 executable/sidecar pair; remove the sidecar when the older executable lacks actions.
 Restart modules only through AW. No live installation is part of these validation runs.
+
+## Shared menu convention
+
+Use Running first (owned by AW), then Settings…, Status…, Logs…, About… in that order. Omit unsupported actions. Stable action IDs and existing command arguments stay unchanged. Module-specific details belong inside the dialogs rather than common menu labels. Logs are privacy-safe; Status must distinguish server reachability, producer state and delivery evidence.
