@@ -10,12 +10,26 @@ use std::{
 pub enum Code {
     Started,
     Unknown,
+    CollectorFailure,
+    ControlsUnavailable,
     Prejoin,
     Ambiguous,
     JoinedCandidate,
     DeliveryPending,
     DeliveryAvailable,
     ManagementAction,
+}
+impl Code {
+    pub fn observation(activity: &crate::Activity) -> Self {
+        match activity.state.as_str() {
+            "joined_candidate" => Self::JoinedCandidate,
+            "prejoin" => Self::Prejoin,
+            "ambiguous" => Self::Ambiguous,
+            _ if activity.evidence == "collector_failure" => Self::CollectorFailure,
+            _ if activity.evidence == "no_joined_control_set" => Self::ControlsUnavailable,
+            _ => Self::Unknown,
+        }
+    }
 }
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -61,4 +75,28 @@ pub fn read(base: &Path) -> std::io::Result<Vec<Record>> {
         .split(|b| *b == b'\n')
         .filter_map(|line| serde_json::from_slice::<Record>(line).ok())
         .collect())
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn observation_reasons_do_not_include_context() {
+        let mut a = crate::classify(
+            &crate::Snapshot {
+                collector_ok: false,
+                windows: vec![],
+            },
+            false,
+        );
+        assert_eq!(
+            serde_json::to_string(&Code::observation(&a)).unwrap(),
+            "\"collector_failure\""
+        );
+        a.evidence = "no_joined_control_set".into();
+        a.title = "private topic".into();
+        assert_eq!(
+            serde_json::to_string(&Code::observation(&a)).unwrap(),
+            "\"controls_unavailable\""
+        );
+    }
 }

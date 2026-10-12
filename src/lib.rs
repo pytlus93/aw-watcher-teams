@@ -304,6 +304,20 @@ mod tests {
         assert_eq!(e.duration, 5.0);
     }
     #[test]
+    fn camera_and_sharing_toggles_keep_observed_session() {
+        let mut t = tracker();
+        let mut w = call();
+        w.camera = false;
+        w.sharing = false;
+        t.observe(&snapshot(vec![w.clone()]), at(0));
+        w.sharing = true;
+        let first = t.observe(&snapshot(vec![w.clone()]), at(5)).unwrap();
+        w.camera = true;
+        let second = t.observe(&snapshot(vec![w]), at(10)).unwrap();
+        assert_eq!(first.data.session_id, second.data.session_id);
+        assert_eq!(second.duration, 10.0);
+    }
+    #[test]
     fn title_appearing_later_updates_same_session() {
         let mut t = tracker();
         let mut w = call();

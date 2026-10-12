@@ -127,16 +127,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             config.collector_timeout_seconds,
             collect_title,
         );
-        let status = classify(&snapshot, collect_title).state;
+        let activity = classify(&snapshot, collect_title);
+        let status = format!("{}:{}", activity.state, activity.evidence);
         if status != last_status {
             eprintln!("Collector state: {status}");
-            let code = match status.as_str() {
-                "joined_candidate" => Code::JoinedCandidate,
-                "prejoin" => Code::Prejoin,
-                "ambiguous" => Code::Ambiguous,
-                _ => Code::Unknown,
-            };
-            let _ = privacy_log::append(base, code);
+            let _ = privacy_log::append(base, Code::observation(&activity));
             last_status = status;
         }
         if let Some(event) = tracker.observe(&snapshot, chrono::Utc::now()) {

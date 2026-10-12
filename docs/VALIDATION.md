@@ -136,3 +136,11 @@ runs were not repeated for 0.5. Transport regression tests passed. The 0.5 colle
 now shares the owned-helper job guard; older helper-lifetime limitations above apply
 to the older version. Settings visual/save behavior and the upgraded host submenu
 still need separate validation. See TRAY-ACTIONS.md for protocol and rollback details.
+
+## 2026-10-12 call-gap diagnosis and 0.5.1 diagnostics
+
+The user reported one continuous call with screen sharing and camera changes. Privacy-safe logs from the real desktop namespace show joined_candidate → unknown at 11:02:42 UTC, joined_candidate at 11:03:39, unknown at 11:06:07 and joined_candidate at 11:06:13. Stored call intervals end at the last positive observations, hence the visible gaps. This is loss of collection evidence, not evidence of hang-up. The old unknown code does not reveal whether collection failed or controls became unavailable, so media changes are a plausible correlation, not a proven cause.
+
+0.5.1 adds collector_failure and controls_unavailable diagnostic codes and logs reason transitions even when the state stays unknown. Codes contain no titles, accounts, organizations, button captions or window IDs. Existing old unknown records remain readable. Payload/event contracts and privacy defaults are unchanged. New regression confirms camera/sharing toggles on the same positively observed call window do not split its local session. Unknown evidence still breaks duration; no historical gaps are filled by assumption.
+
+The initial offline suite passed. A repeated combined transport run subsequently failed the existing database-restore case with Windows socket error 10053; the cause is unresolved. All 11 transport cases passed separately in fresh test processes, and the library suite passed (36 tests, one opt-in ignored). Clippy and release packaging passed; opt-in real-server harnesses remain unrun. No live Teams capture/config changes or deployment performed for this follow-up. The new diagnostics must be installed in the desktop-owned instance before they can distinguish a future interruption; historical unknown records cannot supply information that was not logged.

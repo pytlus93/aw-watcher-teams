@@ -190,3 +190,5 @@ performed. A login shortcut alone does not prove hard-restart recovery.
 
 ## Tray actions (0.5)
 Protocol 1 hosts can expose configuration/privacy, operational log, server reachability and About actions. Older trays keep the ordinary module toggle. See docs/TRAY-ACTIONS.md for shared profile resolution, manual commands, packaging and rollback; docs/VALIDATION.md records the local checks. This source package has not been deployed to the installed AW.
+
+0.5.1 distinguishes collector failure from temporarily unavailable call controls in privacy-safe diagnostics. Camera/sharing toggles alone preserve session identity; an unknown observation still leaves an honest evidence gap.
