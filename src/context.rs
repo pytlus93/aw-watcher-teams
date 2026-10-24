@@ -40,6 +40,7 @@ impl Launch {
         let mut cli_testing = false;
         let mut profile = None;
         let mut server = None;
+        let mut port = None;
         let mut config = None;
         let mut i = 0;
         while i < args.len() {
@@ -48,6 +49,15 @@ impl Launch {
             match token.as_str() {
                 "--testing" => cli_testing = true,
                 "--no-ui" => no_ui = true,
+                "--port" => {
+                    let value = args.get(i).ok_or("Port required")?;
+                    i += 1;
+                    let value = value.parse::<u16>().map_err(|_| "Port must be 1–65535")?;
+                    if value == 0 {
+                        return Err("Port must be 1–65535".into());
+                    }
+                    port = Some(value);
+                }
                 "--profile" | "--server" | "--config" => {
                     let value = args.get(i).ok_or("Missing option value")?.clone();
                     i += 1;
@@ -144,10 +154,17 @@ impl Launch {
         };
         let base = PathBuf::from(root).join(app).join("aw-watcher-teams");
         let config_path = config.unwrap_or_else(|| base.join("config.json"));
-        let server_override = server
+        let mut server_override = server
             .or_else(|| env.get("AW_SERVER_URL").cloned())
             .map(|s| crate::validate_server(&s).map(|u| u.to_string()))
             .transpose()?;
+        if let Some(port) = port {
+            let fallback = format!("http://127.0.0.1:{}/", if testing { 5666 } else { 5600 });
+            let mut url = crate::validate_server(server_override.as_deref().unwrap_or(&fallback))?;
+            url.set_port(Some(port))
+                .map_err(|_| "Cannot set server port")?;
+            server_override = Some(url.to_string());
+        }
         Ok(Self {
             command,
             no_ui,

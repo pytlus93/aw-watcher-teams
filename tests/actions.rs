@@ -45,6 +45,28 @@ fn run(root: &PathBuf, argv: &[&str], vars: &[(&str, &str)]) -> Output {
     cmd.output().unwrap()
 }
 #[test]
+fn explicit_port_is_shared_by_producer_and_actions() {
+    for action in [None, Some("configure"), Some("status-ui")] {
+        let mut argv = args(&["--testing", "--port", "7123"]);
+        if let Some(action) = action {
+            argv.push(action.into());
+        }
+        let launch = Launch::resolve(&argv, &env()).unwrap();
+        assert!(launch.testing);
+        assert_eq!(launch.defaults().server, "http://127.0.0.1:7123/");
+    }
+    let launch = Launch::resolve(
+        &args(&["--port", "7123", "--server", "http://localhost:7654/"]),
+        &env(),
+    )
+    .unwrap();
+    assert_eq!(launch.defaults().server, "http://localhost:7123/");
+    for port in ["0", "65536", "-1", "abc", ""] {
+        assert!(Launch::resolve(&args(&["--port", port]), &env()).is_err());
+    }
+    assert!(Launch::resolve(&args(&["--port"]), &env()).is_err());
+}
+#[test]
 fn profiles_testing_and_cli_overrides_share_resolution() {
     let e = env();
     let default = Launch::resolve(&[], &e).unwrap();

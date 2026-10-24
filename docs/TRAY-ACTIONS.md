@@ -29,6 +29,12 @@ and defaults to port 5666. Other profiles default to port 5600. Legacy shared
 testing configuration is not imported. Server overrides must be HTTP loopback.
 Producer and actions use this same resolver.
 
+Release 1.0 adds `--port <port>` (1–65535). It overrides the port in an explicit
+`--server` or environment `AW_SERVER_URL`; without either URL, the endpoint is
+127.0.0.1 at that port, overriding the saved endpoint. Argument order does not change
+this precedence. It does not select a testing namespace: combine with `--testing`
+when using a testing server. Action/producer resolution remains identical.
+
 Operational logs contain UTC timestamps and enumerated state/delivery codes, never
 captions, account, organization, arbitrary exception strings or configuration values.
 The log viewer skips malformed/unrecognized records and displays at most 50 records.

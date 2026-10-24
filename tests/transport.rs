@@ -25,6 +25,7 @@ struct State {
     lost_reply: bool,
     creates: Vec<u16>,
     writes: usize,
+    keep_alive: bool,
 }
 struct Server {
     addr: SocketAddr,
@@ -81,97 +82,105 @@ fn handle(mut stream: TcpStream, state: &Arc<Mutex<State>>) {
         .set_read_timeout(Some(Duration::from_secs(2)))
         .unwrap();
     let mut reader = BufReader::new(stream.try_clone().unwrap());
-    let mut request = String::new();
-    if reader.read_line(&mut request).is_err() {
-        return;
-    }
-    let mut length = 0;
-    loop {
-        let mut line = String::new();
-        if reader.read_line(&mut line).is_err() {
+    let keep_alive = state.lock().unwrap().keep_alive;
+    for _ in 0..32 {
+        let mut request = String::new();
+        if reader.read_line(&mut request).is_err() {
             return;
         }
-        if line == "\r\n" || line.is_empty() {
-            break;
-        }
-        if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
-            length = value.trim().parse().unwrap();
-        }
-    }
-    let mut body = vec![0; length];
-    if reader.read_exact(&mut body).is_err() {
-        return;
-    }
-    let data: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
-    let words: Vec<_> = request.split_whitespace().collect();
-    if words.len() < 2 {
-        return;
-    }
-    let method = words[0];
-    let path = words[1].split('?').next().unwrap();
-    let mut s = state.lock().unwrap();
-    let (status, response) = if path.ends_with("/events") && method == "POST" {
-        if !s.bucket {
-            (404, json!({}))
-        } else if let Some(status) = s.event_error {
-            (status, json!({"id":1}))
-        } else if !data.is_array() || data.as_array().unwrap().len() != 1 {
-            (422, json!({}))
-        } else {
-            let mut event = data[0].clone();
-            let id = if let Some(id) = event["id"].as_u64() {
-                id
-            } else {
-                s.next += 1;
-                s.next
-            };
-            event["id"] = id.into();
-            s.events.insert(id, event.clone());
-            s.writes += 1;
-            if s.lost_reply {
-                s.lost_reply = false;
+        let mut length = 0;
+        loop {
+            let mut line = String::new();
+            if reader.read_line(&mut line).is_err() {
                 return;
             }
-            (200, json!([event]))
+            if line == "\r\n" || line.is_empty() {
+                break;
+            }
+            if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                length = value.trim().parse().unwrap();
+            }
         }
-    } else if path.ends_with("/events") && method == "GET" {
-        if s.bucket {
-            (200, json!(s.events.values().cloned().collect::<Vec<_>>()))
+        let mut body = vec![0; length];
+        if reader.read_exact(&mut body).is_err() {
+            return;
+        }
+        let data: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+        let words: Vec<_> = request.split_whitespace().collect();
+        if words.len() < 2 {
+            return;
+        }
+        let method = words[0];
+        let path = words[1].split('?').next().unwrap();
+        let mut s = state.lock().unwrap();
+        let (status, response) = if path.ends_with("/events") && method == "POST" {
+            if !s.bucket {
+                (404, json!({}))
+            } else if let Some(status) = s.event_error {
+                (status, json!({"id":1}))
+            } else if !data.is_array() || data.as_array().unwrap().len() != 1 {
+                (422, json!({}))
+            } else {
+                let mut event = data[0].clone();
+                let id = if let Some(id) = event["id"].as_u64() {
+                    id
+                } else {
+                    s.next += 1;
+                    s.next
+                };
+                event["id"] = id.into();
+                s.events.insert(id, event.clone());
+                s.writes += 1;
+                if s.lost_reply {
+                    s.lost_reply = false;
+                    return;
+                }
+                (200, json!([event]))
+            }
+        } else if path.ends_with("/events") && method == "GET" {
+            if s.bucket {
+                (200, json!(s.events.values().cloned().collect::<Vec<_>>()))
+            } else {
+                (404, json!({}))
+            }
+        } else if method == "POST" {
+            let status = if let Some(status) = s.creation_error {
+                status
+            } else if s.bucket {
+                304
+            } else {
+                s.bucket = true;
+                200
+            };
+            s.creates.push(status);
+            (status, json!({}))
+        } else if method == "GET" {
+            if s.bucket {
+                (
+                    200,
+                    json!({"type":if s.incompatible{"currentwindow"}else{"call-evidence"}}),
+                )
+            } else {
+                (404, json!({}))
+            }
         } else {
             (404, json!({}))
-        }
-    } else if method == "POST" {
-        let status = if let Some(status) = s.creation_error {
-            status
-        } else if s.bucket {
-            304
-        } else {
-            s.bucket = true;
-            200
         };
-        s.creates.push(status);
-        (status, json!({}))
-    } else if method == "GET" {
-        if s.bucket {
-            (
-                200,
-                json!({"type":if s.incompatible{"currentwindow"}else{"call-evidence"}}),
-            )
+        let bytes = if status == 304 {
+            Vec::new()
         } else {
-            (404, json!({}))
+            serde_json::to_vec(&response).unwrap()
+        };
+        drop(s);
+        let length = if status == 304 { 67 } else { bytes.len() };
+        let connection = if keep_alive { "keep-alive" } else { "close" };
+        let header=format!("HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\nContent-Length: {length}\r\nConnection: {connection}\r\n\r\n");
+        let _ = stream.write_all(header.as_bytes());
+        let _ = stream.write_all(&bytes);
+        if !keep_alive {
+            break;
         }
-    } else {
-        (404, json!({}))
-    };
-    let bytes = if status == 304 {
-        Vec::new()
-    } else {
-        serde_json::to_vec(&response).unwrap()
-    };
-    drop(s);
-    let header=format!("HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",bytes.len());
-    let _ = stream.write_all(header.as_bytes());
-    let _ = stream.write_all(&bytes);
+    }
 }
 fn event(session: &str, duration: f64) -> SessionEvent {
     SessionEvent {
@@ -207,6 +216,7 @@ fn checkpoint(name: &str) -> PathBuf {
 #[test]
 fn existing_304_and_producer_restart_resume_updates() {
     let mut server = Server::offline();
+    server.state.lock().unwrap().keep_alive = true;
     server.start();
     let path = checkpoint("restart");
     let mut writer = AwWriter::new(server.url(), path.clone()).unwrap();

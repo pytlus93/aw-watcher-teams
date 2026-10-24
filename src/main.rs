@@ -79,7 +79,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             return Ok(());
         }
         LaunchCommand::Help => {
-            println!("aw-watcher-teams [--testing | --profile NAME] [--server URL] [--config PATH]\nconfigure | --settings | logs-ui | status-ui | about [--no-ui]\n--init-config | --check-config PATH | --version");
+            println!("aw-watcher-teams [--testing | --profile NAME] [--server URL] [--port PORT] [--config PATH]\nconfigure | --settings | logs-ui | status-ui | about [--no-ui]\n--init-config | --check-config PATH | --version");
             return Ok(());
         }
         LaunchCommand::Init => {

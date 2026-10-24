@@ -1,5 +1,7 @@
 # ActivityWatch call evidence for Microsoft Teams
 
+Version **1.0.0**. ActivityWatch module/client identity: `aw-watcher-teams`.
+
 A Windows module managed by ActivityWatch that infers ongoing Teams calls from qualifying window controls. It observes background and minimized call windows as well as foreground windows. These intervals describe call evidence, not measured attention or proof of attendance.
 
 ## Requirements
@@ -25,6 +27,16 @@ Start ActivityWatch normally. **Modules → aw-watcher-teams** controls the work
 ## Configuration and everyday use
 
 The default config is `%LOCALAPPDATA%\activitywatch\aw-watcher-teams\config.json`. Named profiles and testing use separate roots; see [tray actions](docs/TRAY-ACTIONS.md). Restart the module through AW after saving settings.
+
+`--testing` selects the isolated testing profile and defaults to port `5666`.
+`--port <port>` accepts 1–65535 and overrides the server port for both the producer
+and management actions. It takes precedence over `--server` and `AW_SERVER_URL`;
+without either URL, it uses `127.0.0.1` and overrides the configured endpoint.
+Port selection does not change the profile or imply testing mode. For example:
+
+```powershell
+.\aw-watcher-teams.exe --testing --port 7123 --init-config
+```
 
 | Setting | New configuration default |
 | --- | --- |
@@ -53,8 +65,13 @@ Requires Rust/MSVC on Windows. The build uses cached Cargo dependencies; fetch t
 ./scripts/build.ps1 -Test -Package
 ```
 
-Packages are written to `dist/`. Tests use synthetic collection/protocol fixtures; opt-in real-server and helper-lifecycle checks are documented in [validation](docs/VALIDATION.md). They do not establish real-call or reboot compatibility. [Tray protocol and rollback](docs/TRAY-ACTIONS.md) documents integration with AW.
+The Windows x64 package is `dist/aw-watcher-teams-1.0.0.zip`, with a `.sha256`
+checksum sidecar. Tests use synthetic collection/protocol fixtures; opt-in
+real-server and helper-lifecycle checks are documented in [validation](docs/VALIDATION.md).
+They do not establish real-call or reboot compatibility.
+[Tray protocol and rollback](docs/TRAY-ACTIONS.md) documents integration with AW.
 
 ## License
 
-Original implementation described in [the data contract](docs/DATA-CONTRACT.md); the source declares MIT. This checkout does not yet include a standalone license file in its package.
+[MIT](LICENSE). Original implementation and provenance are described in
+[the data contract](docs/DATA-CONTRACT.md). [Release notes](CHANGELOG.md) describe 1.0.0.

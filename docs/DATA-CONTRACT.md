@@ -1,5 +1,9 @@
 # Teams event data contract (0.4)
 
+Release 1.0.0 adds a CLI port override and packaging/license changes, with no new
+event fields, collection permissions or privacy defaults. `--port` changes only
+the local server endpoint; `--testing` continues to select an isolated profile.
+
 This is an AW-managed module using its existing custom bucket type **call-evidence**.
 It is not currentwindow, afkstatus, or an official Teams event type. AW's documented
 generic contract requires an event timestamp, duration and object-valued data; there

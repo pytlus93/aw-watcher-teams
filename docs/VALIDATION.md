@@ -1,5 +1,56 @@
 # Validation: Teams module 0.4 — 2026-10-11
 
+## Release 1.0.0 — 2026-10-24
+
+`scripts/build.ps1 -Test -Package` passed with Rust 1.99.0 on
+x86_64-pc-windows-msvc: 67 tests passed, four opt-in checks excluded from the normal
+suite, Clippy with warnings denied, optimized release build and ZIP packaging.
+Cargo.lock changes only this module's version. Cargo emitted incremental-cache
+finalization permission notes on some runs; commands still completed successfully.
+
+Added `--port` tests cover producer and management-action resolution, testing
+profile preservation, explicit server-host retention and
+precedence, and missing/invalid/out-of-range ports. A release-binary CLI check under
+ignored local/ confirms --version=1.0.0 and --testing --port 7123 initialization and
+validation, without starting collection or changing production settings.
+
+The 11 transport cases pass, including existing-bucket producer restart, actual
+subsequent event updates, type rejection, lost replies, database recreation,
+outage/restart and preserved observation timestamps/gaps. The restart fixture now
+allows persistent HTTP/1.1 connections and sends bodyless 304 with Content-Length:
+67. Status-only creation handling continues without reading a nonexistent body;
+metadata/event endpoints still parse required response bodies. Teams writes session
+interval events rather than heartbeat events; the evidence is actual resumed event
+delivery. Event-endpoint 304 and genuine failures remain rejected.
+
+Opt-in server_lifecycle passed separately against the installed Python and Rust
+AW binaries, using only owned isolated child servers and synthetic events. Python
+uses memory storage; Rust uses a unique local SQLite path with legacy import
+disabled. Coverage includes late start, creation/304, same-ID updates, producer
+restart, server outage/restart, original timestamps, interval gaps and exports.
+The earlier opt-in protocol/privacy migration check also passed on the isolated
+Python server. API key order differs between implementations and is not a GUI
+presentation guarantee.
+
+Separately built development examples passed owned-PowerShell-child termination
+and OS-lock lifecycle checks (duplicate rejection, crash release, intentional stop,
+failed launch and later relaunch). These are helper/lock tests, not proof of the
+installed aw-qt host's restart policy. Examples are excluded from release packages.
+
+Settings ValidateOnly and collector ValidateInterop checks pass without opening
+dialogs or collecting private Teams state. No production module was installed,
+stopped or restarted. Real-call scenarios, revised settings UI, installed-host
+supervision, hard reboot/login, actual lock/suspend and GUI rendering remain
+unverified. Existing inference/privacy defaults and background/minimized evidence
+collection behavior are retained.
+
+Release staging is recreated to exclude obsolete files. The Windows x64 ZIP now
+includes the executable, matching actions sidecar, installer, MIT license, changelog
+and component documentation, with a SHA256 sidecar. No Git remote is configured;
+no push or release publication was performed.
+
+## Historical 0.4 validation
+
 **Component checks pass; full installed-host acceptance remains incomplete.**
 This run edits/builds only this checkout. It does not replace the installed 0.3.1
 module, stop/restart production AW, reboot/lock Windows, read private Teams windows,
